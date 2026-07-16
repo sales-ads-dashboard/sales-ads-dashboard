@@ -46,11 +46,13 @@ const state = {
   filterApplied: {},
   searchDraft: {},
   searchApplied: {},
+  detailFilters: {},
   pagination: {},
   ui: {
     monthlyCategoryTab: "all",
     invalidDetailTab: "all",
     batchSummaryTab: "category",
+    batchAcosSort: "desc",
   },
 };
 
@@ -144,29 +146,43 @@ function formatChange(current, previous, format = "number", inverse = false) {
   return `<span class="delta ${className}">${arrow} ${deltaText} (${rateText})</span>`;
 }
 
-function kpiCard({ label, value, previous, valueType = "number", tone = "primary", inverse = false, note = "较上月" }) {
+function kpiCard({ label, value, previous, valueType = "number", tone = "primary", inverse = false, note = "较上月", description = "" }) {
   let display = formatNumber(value, 2);
   if (valueType === "integer") display = formatNumber(value, 0);
   if (valueType === "currency") display = formatCurrency(value, true);
   if (valueType === "percent") display = formatPercent(value, false, 2);
   if (valueType === "fractionPercent") display = formatPercent(value, true, 2);
   const compare = previous === undefined || previous === null
-    ? note
-    : `${note} ${formatChange(value, previous, valueType === "fractionPercent" ? "number" : valueType, inverse)}`;
+    ? escapeHtml(note)
+    : `${note ? `${escapeHtml(note)} ` : ""}${formatChange(value, previous, valueType === "fractionPercent" ? "number" : valueType, inverse)}`;
   return `
     <article class="kpi-card" data-tone="${escapeHtml(tone)}">
       <p class="kpi-card__label">${escapeHtml(label)}</p>
+      ${description ? `<p class="kpi-card__description">${escapeHtml(description)}</p>` : ""}
       <p class="kpi-card__value">${display}</p>
       <p class="kpi-card__compare">${compare}</p>
     </article>`;
 }
 
-function introMarkup(title, description, period = "2026年5月 vs 6月") {
+function detailMetricCard(label, value, valueType = "number", note = "当前筛选明细") {
+  let display = formatNumber(value, 2);
+  if (valueType === "integer") display = formatNumber(value, 0);
+  if (valueType === "currency") display = formatCurrency(value);
+  return `
+    <article class="detail-metric">
+      <p>${escapeHtml(label)}</p>
+      <strong>${display}</strong>
+      <span>${escapeHtml(note)}</span>
+    </article>`;
+}
+
+function introMarkup(title, description, period = "2026年5月 vs 6月", note = "") {
   return `
     <div class="page-intro">
       <div>
         <h2>${escapeHtml(title)}</h2>
         <p>${escapeHtml(description)}</p>
+        ${note ? `<p class="page-intro__note">${escapeHtml(note)}</p>` : ""}
       </div>
       <span class="period-badge">${escapeHtml(period)}</span>
     </div>`;
@@ -227,6 +243,38 @@ function selectedLabel(pageId, config) {
   return `已选 ${set.size} 项`;
 }
 
+const MULTI_SELECT_SEARCH_THRESHOLD = 7;
+
+function normalizeFuzzyText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/规则/g, "")
+    .replace(/运营组长|组长|负责人/g, "")
+    .replace(/[\s()（）[\]【】{}<>《》/\\._\-·]+/g, "");
+}
+
+function fuzzyOptionMatch(option, query) {
+  const candidate = normalizeFuzzyText(option);
+  const needle = normalizeFuzzyText(query);
+  if (!needle) return true;
+  if (candidate.includes(needle) || needle.includes(candidate)) return true;
+  let matched = 0;
+  for (const character of candidate) {
+    if (character === needle[matched]) matched += 1;
+    if (matched === needle.length) return true;
+  }
+  return false;
+}
+
+function multiSelectSearchMarkup(options) {
+  if (options.length < MULTI_SELECT_SEARCH_THRESHOLD) return "";
+  return `
+    <div class="multi-select__search-wrap">
+      <input class="multi-select__search" type="search" placeholder="搜索选项" aria-label="搜索筛选选项" autocomplete="off" />
+      <span class="multi-select__search-count">${options.length} 项</span>
+    </div>`;
+}
+
 function filterMarkup(pageId, configs, searchConfig = null, note = "") {
   initializeFilters(pageId, configs);
   const fields = configs.map((config) => {
@@ -240,6 +288,7 @@ function filterMarkup(pageId, configs, searchConfig = null, note = "") {
             ${escapeHtml(selectedLabel(pageId, config))}
           </button>
           <div class="multi-select__menu is-hidden">
+            ${multiSelectSearchMarkup(options)}
             <div class="multi-select__tools">
               <button type="button" class="link-button" data-select-action="all">全选</button>
               <button type="button" class="link-button" data-select-action="clear">清除</button>
@@ -251,6 +300,7 @@ function filterMarkup(pageId, configs, searchConfig = null, note = "") {
                   <span>${escapeHtml(option)}</span>
                 </label>`).join("")}
             </div>
+            <div class="multi-select__empty is-hidden">未找到匹配选项</div>
           </div>
         </div>
       </div>`;
@@ -278,6 +328,80 @@ function filterMarkup(pageId, configs, searchConfig = null, note = "") {
         </div>
       </div>
     </section>`;
+}
+
+function detailSearchMarkup(pageId, { label, placeholder }) {
+  return `
+    <div class="detail-search" data-page-filter="${escapeHtml(pageId)}">
+      <div class="filter-field">
+        <label for="${pageId}-detail-search">${escapeHtml(label)}</label>
+        <input class="search-input" id="${pageId}-detail-search" type="search"
+          placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(state.searchDraft[pageId] || "")}" />
+      </div>
+      <button type="button" class="button button--primary" data-filter-query>查询</button>
+      <button type="button" class="button" data-search-clear>清除关键词</button>
+    </div>`;
+}
+
+function initializeDetailFilter(filterId, options) {
+  if (state.detailFilters[filterId]) return state.detailFilters[filterId];
+  const values = [...new Set(options.filter((value) => value !== null && value !== undefined && value !== ""))];
+  state.detailFilters[filterId] = {
+    options: values,
+    ruleDraft: new Set(values),
+    ruleApplied: new Set(values),
+    searchDraft: "",
+    searchApplied: "",
+  };
+  return state.detailFilters[filterId];
+}
+
+function detailSelectedLabel(detailState) {
+  if (detailState.ruleDraft.size === detailState.options.length) return "全部";
+  if (detailState.ruleDraft.size === 0) return "已清除";
+  if (detailState.ruleDraft.size === 1) return [...detailState.ruleDraft][0];
+  return `已选 ${detailState.ruleDraft.size} 项`;
+}
+
+function detailFilterMarkup(filterId, { options, searchLabel, placeholder }) {
+  const detailState = initializeDetailFilter(filterId, options);
+  return `
+    <div class="detail-search detail-filter-bar" data-detail-filter="${escapeHtml(filterId)}">
+      <div class="filter-field">
+        <span class="filter-field__label">规则类别（多选）</span>
+        <div class="multi-select" data-filter-id="rule">
+          <button type="button" class="multi-select__button" aria-expanded="false">${escapeHtml(detailSelectedLabel(detailState))}</button>
+          <div class="multi-select__menu is-hidden">
+            ${multiSelectSearchMarkup(detailState.options)}
+            <div class="multi-select__tools">
+              <button type="button" class="link-button" data-select-action="all">全选</button>
+              <button type="button" class="link-button" data-select-action="clear">清除</button>
+            </div>
+            <div class="multi-select__options">
+              ${detailState.options.map((option) => `
+                <label class="check-option">
+                  <input type="checkbox" value="${escapeHtml(option)}" ${detailState.ruleDraft.has(option) ? "checked" : ""} />
+                  <span>${escapeHtml(option)}</span>
+                </label>`).join("")}
+            </div>
+            <div class="multi-select__empty is-hidden">未找到匹配选项</div>
+          </div>
+        </div>
+      </div>
+      <div class="filter-field">
+        <label for="${escapeHtml(filterId)}-detail-search">${escapeHtml(searchLabel)}</label>
+        <input class="search-input" id="${escapeHtml(filterId)}-detail-search" type="search"
+          placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(detailState.searchDraft)}" />
+      </div>
+      <button type="button" class="button button--primary" data-detail-query>查询</button>
+      <button type="button" class="button" data-detail-search-clear>清除关键词</button>
+    </div>`;
+}
+
+function detailSearchMatches(filterId, row, fields) {
+  const query = (state.detailFilters[filterId]?.searchApplied || "").trim().toLowerCase();
+  if (!query) return true;
+  return fields.some((field) => String(row[field] ?? "").toLowerCase().includes(query));
 }
 
 function rowMatches(pageId, row, mapping) {
@@ -308,7 +432,7 @@ function compareList(rows, options = {}) {
   if (!rows.length) return emptyState();
   const previousVisible = options.previousVisible !== false;
   const currentVisible = options.currentVisible !== false;
-  return `<div class="compare-list">${rows.map((row) => {
+  return `<div class="compare-list ${options.wrapLabels ? "compare-list--wrap-labels" : ""}">${rows.map((row) => {
     const previous = asNumber(row.previous);
     const current = asNumber(row.current);
     const max = Math.max(Math.abs(previous), Math.abs(current), 1);
@@ -334,26 +458,44 @@ function verticalCompareChart(rows, options = {}) {
   const currentVisible = options.currentVisible !== false;
   const values = rows.flatMap((row) => [asNumber(row.previous), asNumber(row.current)]);
   const max = Math.max(...values.map(Math.abs), 1);
+  const scaleMax = max / (options.maxFillRatio || 0.86);
   const formatter = options.formatter || ((value) => formatCompact(value));
-  return `<div class="vertical-chart">${rows.map((row) => {
+  const chart = `<div class="vertical-chart ${escapeHtml(options.className || "")}">${rows.map((row) => {
     const previous = asNumber(row.previous);
     const current = asNumber(row.current);
+    const previousLabelClass = options.staggerLabelsByValue && previous >= current ? "is-label-high" : "";
+    const currentLabelClass = options.staggerLabelsByValue && current > previous ? "is-label-high" : "";
     return `
       <div class="vertical-group">
         <div class="vertical-bars">
-          ${previousVisible ? `<div class="vertical-bar" style="height:${Math.max(2, Math.abs(previous) / max * 100)}%"><span>${formatter(previous)}</span></div>` : ""}
-          ${currentVisible ? `<div class="vertical-bar is-current" style="height:${Math.max(2, Math.abs(current) / max * 100)}%"><span>${formatter(current)}</span></div>` : ""}
+          ${previousVisible ? `<div class="vertical-bar ${previousLabelClass}" style="height:${Math.max(2, Math.abs(previous) / scaleMax * 100)}%"><span>${formatter(previous)}</span></div>` : ""}
+          ${currentVisible ? `<div class="vertical-bar is-current ${currentLabelClass}" style="height:${Math.max(2, Math.abs(current) / scaleMax * 100)}%"><span>${formatter(current)}</span></div>` : ""}
         </div>
         <div class="vertical-group__label" title="${escapeHtml(row.label)}">${escapeHtml(row.label)}</div>
       </div>`;
   }).join("")}</div>`;
+  if (!options.showYAxis) return chart;
+  const axisFormatter = options.axisFormatter || formatter;
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
+  return `<div class="vertical-chart-frame">
+    <div class="vertical-axis" aria-hidden="true">
+      ${ticks.map((ratio) => `<span style="bottom:${ratio * 100}%">${axisFormatter(scaleMax * ratio)}</span>`).join("")}
+    </div>
+    ${chart}
+  </div>`;
 }
 
 function horizontalBarChart(rows, options = {}) {
   if (!rows.length) return emptyState();
   const max = options.max || Math.max(...rows.map((row) => Math.abs(asNumber(row.value))), 1);
   const formatter = options.formatter || ((value) => formatNumber(value, 2));
-  return `<div class="hbar-chart">${rows.map((row) => `
+  const axisFormatter = options.axisFormatter || formatter;
+  const axis = options.showAxis ? `<div class="chart-axis chart-axis--hbar">
+    <span></span>
+    <div class="chart-axis__ticks">${[0, 0.25, 0.5, 0.75, 1].map((ratio) => `<span style="left:${ratio * 100}%">${axisFormatter(max * ratio)}</span>`).join("")}</div>
+    <span></span>
+  </div>` : "";
+  return `<div class="hbar-chart">${axis}${rows.map((row) => `
     <div class="hbar-row">
       <div class="hbar-row__label" title="${escapeHtml(row.label)}">${escapeHtml(row.label)}</div>
       <div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(0, Math.min(100, Math.abs(asNumber(row.value)) / max * 100))}%"></div></div>
@@ -363,29 +505,125 @@ function horizontalBarChart(rows, options = {}) {
 
 function dumbbellChart(rows, options = {}) {
   if (!rows.length) return emptyState();
-  const allValues = rows.flatMap((row) => [asNumber(row.previous), asNumber(row.current)]);
+  const isValid = (value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) && (!options.hideNonPositive || Number(value) > 0);
+  const allValues = rows.flatMap((row) => [row.previous, row.current]).filter(isValid).map(Number);
   const min = options.min ?? Math.min(0, ...allValues);
   const max = options.max ?? Math.max(...allValues, 1);
   const range = max - min || 1;
   const formatter = options.formatter || ((value) => formatNumber(value, 2));
-  return `<div class="dumbbell-chart">${rows.map((row) => {
-    const previous = asNumber(row.previous);
-    const current = asNumber(row.current);
-    const previousPos = (previous - min) / range * 100;
-    const currentPos = (current - min) / range * 100;
+  const differenceFormatter = options.differenceFormatter || formatter;
+  const axisFormatter = options.axisFormatter || formatter;
+  const valueLabels = options.valueLabels || ["批量", "品类平均", "差值"];
+  const axisTrack = options.adaptiveRowScale
+    ? '<div class="adaptive-axis">各行按自身 ACoS 区间自适应缩放</div>'
+    : `<div class="chart-axis__ticks">${[0, 0.25, 0.5, 0.75, 1].map((ratio) => `<span style="left:${ratio * 100}%">${axisFormatter(min + range * ratio)}</span>`).join("")}</div>`;
+  const axis = options.showAxis ? `<div class="chart-axis chart-axis--dumbbell">
+    <span></span>
+    ${axisTrack}
+    <div class="dumbbell-axis__values"><span>${escapeHtml(valueLabels[0])}</span><span>${escapeHtml(valueLabels[1])}</span><strong>${escapeHtml(valueLabels[2])}</strong></div>
+  </div>` : "";
+  return `<div class="dumbbell-chart">${axis}${rows.map((row) => {
+    const previousValid = isValid(row.previous);
+    const currentValid = isValid(row.current);
+    const previous = previousValid ? Number(row.previous) : null;
+    const current = currentValid ? Number(row.current) : null;
+    const difference = previousValid && currentValid
+      ? (row.difference === undefined ? current - previous : Number(row.difference))
+      : null;
+    let previousPos = previousValid ? (previous - min) / range * 100 : 0;
+    let currentPos = currentValid ? (current - min) / range * 100 : 0;
+    if (options.adaptiveRowScale) {
+      if (previousValid && currentValid) {
+        const rowMinimum = Math.min(previous, current);
+        const rowMaximum = Math.max(previous, current);
+        const delta = rowMaximum - rowMinimum;
+        const padding = Math.max(delta * 0.5, rowMaximum * 0.01, options.adaptiveMinPadding || 0.05);
+        const rowMin = Math.max(options.adaptiveFloor ?? -Infinity, rowMinimum - padding);
+        const rowMax = rowMaximum + padding;
+        const rowRange = rowMax - rowMin || 1;
+        previousPos = (previous - rowMin) / rowRange * 100;
+        currentPos = (current - rowMin) / rowRange * 100;
+      } else {
+        previousPos = previousValid ? 50 : 0;
+        currentPos = currentValid ? 50 : 0;
+      }
+    }
+    const overlap = previousValid && currentValid && Math.abs(previousPos - currentPos) < 2;
     const left = Math.min(previousPos, currentPos);
     const width = Math.abs(previousPos - currentPos);
+    let differenceClass = difference === null ? "is-neutral" : difference > 0 ? "is-good" : difference < 0 ? "is-bad" : "is-neutral";
+    if (options.differenceTone === "higher-is-bad") differenceClass = difference > 0 ? "is-bad" : "is-dark";
     return `
       <div class="dumbbell-row">
         <div class="dumbbell-row__label" title="${escapeHtml(row.label)}">${escapeHtml(row.label)}</div>
         <div class="dumbbell-track">
-          <span class="dumbbell-line" style="left:${left}%;width:${width}%"></span>
-          <span class="dumbbell-dot" style="left:${previousPos}%"></span>
-          <span class="dumbbell-dot is-current" style="left:${currentPos}%"></span>
+          ${previousValid && currentValid ? `<span class="dumbbell-line" style="left:${left}%;width:${width}%"></span>` : ""}
+          ${previousValid ? `<span class="dumbbell-dot ${overlap ? "is-offset-up" : ""}" style="left:${previousPos}%"></span>` : ""}
+          ${currentValid ? `<span class="dumbbell-dot is-current ${overlap ? "is-offset-down" : ""}" style="left:${currentPos}%"></span>` : ""}
         </div>
-        <div class="dumbbell-values"><span>${formatter(previous)}</span><span>${formatter(current)}</span></div>
+        <div class="dumbbell-values">
+          <span>${previousValid ? formatter(previous) : "-"}</span>
+          <span>${currentValid ? formatter(current) : "-"}</span>
+          <strong class="acos-difference ${differenceClass}">${difference === null ? "-" : differenceFormatter(difference)}</strong>
+        </div>
       </div>`;
   }).join("")}</div>`;
+}
+
+function numericComparisonTable(rows, options = {}) {
+  if (!rows.length) return emptyState();
+  const formatter = options.formatter || ((value) => formatNumber(value, 2));
+  const differenceFormatter = options.differenceFormatter || formatter;
+  const labels = options.valueLabels || ["5月", "6月", "变化"];
+  return `<div class="numeric-compare-table">
+    <div class="numeric-compare-row is-header">
+      <span>运营组长</span><span>${escapeHtml(labels[0])}</span><span>${escapeHtml(labels[1])}</span><span>${escapeHtml(labels[2])}</span>
+    </div>
+    ${rows.map((row) => {
+      const previous = asNumber(row.previous);
+      const current = asNumber(row.current);
+      const difference = row.difference === undefined ? current - previous : asNumber(row.difference);
+      const differenceClass = options.differenceTone === "higher-is-bad"
+        ? (difference > 0 ? "is-bad" : difference < 0 ? "is-dark" : "is-neutral")
+        : (difference > 0 ? "is-good" : difference < 0 ? "is-bad" : "is-neutral");
+      return `<div class="numeric-compare-row">
+        <strong>${escapeHtml(row.label)}</strong>
+        <span class="is-previous">${formatter(previous)}</span>
+        <span class="is-current">${formatter(current)}</span>
+        <span class="acos-difference ${differenceClass}">${differenceFormatter(difference)}</span>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function triggerReason(row) {
+  const previous = asNumber(row.上周期触发次数);
+  const current = asNumber(row.本周期触发次数);
+  if (previous === 0 && current >= 5) {
+    return `上周期为0，本周期新增触发且达到${formatNumber(current, 0)}次`;
+  }
+  return row.判断依据 || "-";
+}
+
+function niceFractionMax(values) {
+  const maximum = Math.max(...values.map((value) => Math.max(0, asNumber(value))), 0);
+  const percent = maximum * 100;
+  const step = percent <= 20 ? 5 : percent <= 50 ? 10 : 20;
+  return Math.min(1, Math.max(step / 100, Math.ceil(percent / step) * step / 100));
+}
+
+function formatSignedFractionPercent(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const number = asNumber(value) * 100;
+  const sign = number > 0 ? "+" : number < 0 ? "-" : "";
+  return `${sign}${formatNumber(Math.abs(number), 2)}%`;
+}
+
+function formatSignedPercentPoints(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const number = asNumber(value);
+  const sign = number > 0 ? "+" : number < 0 ? "-" : "";
+  return `${sign}${formatNumber(Math.abs(number), 2)}%`;
 }
 
 function segmentControl(id, options, active) {
@@ -582,22 +820,39 @@ function renderMonthly() {
 
   const sortedBySpend = [...categoryRows].sort((a, b) => b.本月花费 - a.本月花费);
   const topCategories = sortedBySpend.slice(0, 15);
+  const salesCategories = [...categoryRows].sort((a, b) => b.本月销售额 - a.本月销售额).slice(0, 15);
+  const totalCategorySpend = sum(categoryRows, "本月花费");
+  const spendChart = verticalCompareChart(topCategories.map((row) => ({ label: row.品类, previous: row.上月花费, current: row.本月花费 })), {
+    formatter: (v) => formatCurrency(v, true),
+    axisFormatter: (v) => formatCurrency(v, true),
+    className: "vertical-chart--category",
+    showYAxis: true,
+    staggerLabelsByValue: true,
+  });
+  const salesChart = verticalCompareChart(salesCategories.map((row) => ({ label: row.品类, previous: row.上月销售额, current: row.本月销售额 })), {
+    formatter: (v) => formatCurrency(v, true),
+    axisFormatter: (v) => formatCurrency(v, true),
+    className: "vertical-chart--category",
+    showYAxis: true,
+    staggerLabelsByValue: true,
+  });
+  const shareChart = horizontalBarChart(topCategories.map((row) => ({ label: row.品类, value: safeDivide(row.本月花费, totalCategorySpend) })), { max: niceFractionMax(topCategories.map((row) => safeDivide(row.本月花费, totalCategorySpend))), showAxis: true, formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0) });
   let categoryChart = "";
-  let categoryTitle = "重点品类花费与销售额";
+  let categoryTitle = "全部品类对比";
   if (state.ui.monthlyCategoryTab === "spend") {
     categoryTitle = "品类广告花费对比";
-    categoryChart = verticalCompareChart(topCategories.map((row) => ({ label: row.品类, previous: row.上月花费, current: row.本月花费 })), { formatter: (v) => formatCurrency(v, true) });
+    categoryChart = spendChart;
   } else if (state.ui.monthlyCategoryTab === "sales") {
     categoryTitle = "品类广告销售额对比";
-    categoryChart = verticalCompareChart([...categoryRows].sort((a, b) => b.本月销售额 - a.本月销售额).slice(0, 15).map((row) => ({ label: row.品类, previous: row.上月销售额, current: row.本月销售额 })), { formatter: (v) => formatCurrency(v, true) });
+    categoryChart = salesChart;
   } else if (state.ui.monthlyCategoryTab === "share") {
     categoryTitle = "本月品类花费占比";
-    const totalSpend = sum(categoryRows, "本月花费");
-    categoryChart = horizontalBarChart(topCategories.map((row) => ({ label: row.品类, value: safeDivide(row.本月花费, totalSpend) })), { max: 1, formatter: (v) => formatPercent(v, true) });
+    categoryChart = shareChart;
   } else {
-    categoryChart = `<div class="chart-grid">
-      <div>${verticalCompareChart(topCategories.slice(0, 10).map((row) => ({ label: row.品类, previous: row.上月花费, current: row.本月花费 })), { formatter: (v) => formatCurrency(v, true) })}</div>
-      <div>${dumbbellChart(topCategories.slice(0, 10).map((row) => ({ label: row.品类, previous: row.上月ACOS, current: row.本月ACOS })), { formatter: (v) => formatPercent(v) })}</div>
+    categoryChart = `<div class="category-chart-stack">
+      <div class="category-chart-block"><h4>花费对比</h4>${spendChart}</div>
+      <div class="category-chart-block"><h4>销售额对比</h4>${salesChart}</div>
+      <div class="category-chart-block"><h4>花费占比</h4>${shareChart}</div>
     </div>`;
   }
 
@@ -614,7 +869,6 @@ function renderMonthly() {
     本月ACOS: safeDivide(row.本月花费, row.本月销售额) * 100,
     花费环比: changeRate(row.本月花费, row.上月花费),
   })).sort((a, b) => b.本月花费 - a.本月花费);
-
   const categoryColumns = [
     { field: "品类", label: "品类" },
     { field: "运营组长", label: "运营组长" },
@@ -633,7 +887,7 @@ function renderMonthly() {
     { field: "本月销售额", label: "6月销售额", numeric: true, render: (v) => formatCurrency(v) },
     { field: "本月订单量", label: "6月订单", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "本月ACOS", label: "6月 ACoS", numeric: true, render: (v) => formatPercent(v) },
-    { field: "花费环比", label: "花费环比", numeric: true, render: (v) => v === null ? "新增" : formatPercent(v, true) },
+    { field: "花费环比", label: "花费环比", numeric: true, render: (v) => v === null ? "新增" : formatSignedFractionPercent(v) },
   ];
 
   root.innerHTML = `
@@ -671,8 +925,13 @@ function renderMonthly() {
           ${verticalCompareChart(ownerRows.map((row) => ({ label: row.运营组长, previous: row.上月花费, current: row.本月花费 })), { formatter: (v) => formatCurrency(v, true) })}
         </div>
         <div class="chart-panel">
-          <div class="chart-title-row"><div><h4>ACoS 对比</h4></div>${legendMarkup()}</div>
-          ${dumbbellChart(ownerRows.map((row) => ({ label: row.运营组长, previous: row.上月ACOS, current: row.本月ACOS })), { formatter: (v) => formatPercent(v) })}
+          <div class="chart-title-row"><div><h4>ACoS 数值对比</h4><p>直接比较两个月数值及百分点变化</p></div></div>
+          ${numericComparisonTable(ownerRows.map((row) => ({ label: row.运营组长, previous: row.上月ACOS, current: row.本月ACOS })), {
+            valueLabels: ["5月", "6月", "变化"],
+            formatter: (v) => formatPercent(v),
+            differenceFormatter: formatSignedPercentPoints,
+            differenceTone: "higher-is-bad",
+          })}
         </div>
       </div>
       <div style="height:14px"></div>
@@ -761,7 +1020,7 @@ function renderInvalid() {
       ${kpiCard({ label: "关停/归档活动", value: data.totals["本月关停/归档广告活动数量"], valueType: "integer", tone: "primary", note: "本月汇总口径" })}
       ${kpiCard({ label: "无效与低效花费", value: invalidSpend + inefficientSpend, valueType: "currency", tone: "orange", note: "当前筛选范围" })}
     </div>
-    ${filterMarkup("invalid_low_efficiency", configs, { label: "广告活动关键词", placeholder: "搜索广告活动、广告组合或标签" }, `${invalidRows.length + inefficientRows.length} 条活动`)}
+    ${filterMarkup("invalid_low_efficiency", configs, null, `${invalidRows.length + inefficientRows.length} 条活动`)}
     <section class="dashboard-section" id="invalid-analysis">
       ${sectionHead("无效广告分析", "有花费无销售额的广告活动，沿用源表复盘标签。", `${invalidRows.length} 条`)}
       <div class="chart-grid">
@@ -803,6 +1062,7 @@ function renderInvalid() {
     </section>
     <section class="dashboard-section" id="invalid-detail">
       ${sectionHead("广告活动明细", "无效与低效结果分页展示，便于定位广告活动。", `${detailRows.length} 条`)}
+      ${detailSearchMarkup("invalid_low_efficiency", { label: "广告活动关键词", placeholder: "搜索广告活动、广告组合或标签" })}
       <div class="chart-title-row">
         <div></div>
         ${segmentControl("invalid-detail", [["all", "全部"], ["invalid", "无效"], ["inefficient", "低效"]], state.ui.invalidDetailTab)}
@@ -835,6 +1095,7 @@ function renderLingxing() {
   const data = state.data.lingxing_rules;
   const configs = lingxingFilterConfig(data);
   initializeFilters("lingxing_rules", configs);
+  const detailFilter = initializeDetailFilter("lingxing_rules_detail", ["关键词/PAT暂停", "产品(ASIN)暂停", "否词"]);
   const triggerRows = filteredTriggerRows(data);
   const monthSet = selectedSet("lingxing_rules", "month");
   const previousVisible = monthSet.has("5月");
@@ -865,7 +1126,7 @@ function renderLingxing() {
     current: (row) => row.本周期触发次数,
   }).sort((a, b) => b.current - a.current);
   const alerts = triggerRows.filter((row) => ["触发偏低", "异常升高", "无触发"].includes(row.状态))
-    .sort((a, b) => Math.abs(asNumber(b.触发次数变化)) - Math.abs(asNumber(a.触发次数变化)));
+    .sort((a, b) => Math.abs(asNumber(b.增长偏离基准)) - Math.abs(asNumber(a.增长偏离基准)));
 
   const savingCategory = (data.summary.saving_dashboard.by_category || []).filter((row) => {
     const categories = selectedSet("lingxing_rules", "category");
@@ -888,8 +1149,18 @@ function renderLingxing() {
       owner: "运营组长",
       rule: "规则类别",
       ruleGroup: "规则大类",
-    }) && searchMatches("lingxing_rules", row, ["广告活动", "广告组", "对象明细", "原始规则名"]);
+    }) && detailFilter.ruleApplied.size > 0
+      && detailFilter.ruleApplied.has(row.规则类别)
+      && detailSearchMatches("lingxing_rules_detail", row, ["广告活动", "标签"]);
   }).sort((a, b) => String(b.触发日期).localeCompare(String(a.触发日期)));
+
+  const detailSummary = {
+    campaigns: new Set(detailRows.map((row) => row.广告活动).filter(Boolean)).size,
+    spend: sum(detailRows, "花费"),
+    orders: sum(detailRows, "订单"),
+    sales: sum(detailRows, "销售额"),
+    saving: sum(detailRows, "主理论节费"),
+  };
 
   const detailColumns = [
     { field: "月份", label: "月份" },
@@ -900,12 +1171,12 @@ function renderLingxing() {
     { field: "规则大类", label: "规则大类" },
     { field: "原始规则名", label: "原始规则名", long: true },
     { field: "广告活动", label: "广告活动", long: true },
+    { field: "标签", label: "标签", long: true },
     { field: "优化对象", label: "优化对象" },
     { field: "对象明细", label: "对象明细", long: true },
-    { field: "花费", label: "花费", numeric: true, render: (v) => formatCurrency(v) },
-    { field: "订单", label: "订单", numeric: true, render: (v) => formatNumber(v, 0) },
-    { field: "销售额", label: "销售额", numeric: true, render: (v) => formatCurrency(v) },
+    { field: "命中取值", label: "命中取值", long: true },
     { field: "主理论节费", label: "主理论节费", numeric: true, render: (v) => v === "-" ? "-" : formatCurrency(v) },
+    { field: "节费去重状态", label: "节费去重状态", render: (v) => tagMarkup(v) },
     { field: "节费来源口径", label: "节费来源口径", long: true },
   ];
 
@@ -925,17 +1196,18 @@ function renderLingxing() {
     note: currentVisible ? "6月" : "5月",
   })).join("") + kpiCard({
     label: "理论月化节费",
+    description: "仅计算产品和关键词/PAT暂停的理论节费",
     value: currentVisible ? mainSaving.current : mainSaving.previous,
     previous: previousVisible && currentVisible ? mainSaving.previous : null,
     valueType: "currency",
     tone: "green",
-    note: "仅产品与关键词/PAT暂停",
+    note: "",
   });
 
   root.innerHTML = `
-    ${introMarkup("领星自动化规则复盘", "监控规则触发变化、理论控费规模和异常品类，理论节费不等同实际利润。")}
+    ${introMarkup("领星自动化规则复盘", "监控规则触发变化、理论控费规模和异常品类，理论节费不等同实际利润。", "2026年5月 vs 6月", "规则触发总数、Top 排名及异常监控默认剔除指定低曝光 CPC 增投触发。")}
     <div class="kpi-grid kpi-grid--six">${kpis}</div>
-    ${filterMarkup("lingxing_rules", configs, { label: "广告活动 / 对象明细关键词", placeholder: "搜索活动、广告组、对象或规则名" }, `${triggerRows.length} 个监控组合`)}
+    ${filterMarkup("lingxing_rules", configs, null, `${triggerRows.length} 个监控组合`)}
     <section class="dashboard-section" id="trigger-monitor">
       ${sectionHead("规则触发监控", "触发偏低或异常升高参照同品类、同规则与整体增长幅度判断。", `${alerts.length} 个待关注组合`)}
       <div class="chart-grid">
@@ -952,12 +1224,12 @@ function renderLingxing() {
           ${verticalCompareChart(ownerRows.map((row) => ({ label: row.运营组长, previous: row.previous, current: row.current })), { previousVisible, currentVisible, formatter: (v) => formatCompact(v) })}
         </div>
         <div class="chart-panel">
-          <div class="chart-title-row"><div><h4>触发异常与偏低</h4><p>按触发次数变化绝对值排序</p></div></div>
+          <div class="chart-title-row"><div><h4>触发异常与偏低</h4><p>按增长率偏离综合基准排序</p></div></div>
           <div class="alert-list">
             ${alerts.length ? alerts.slice(0, 10).map((row) => `
               <div class="alert-item">
                 ${tagMarkup(row.状态)}
-                <div><strong>${escapeHtml(row.品类)} · ${escapeHtml(row.规则类别)}</strong><p>${escapeHtml(row.判断依据 || "-")}</p></div>
+                <div><strong>${escapeHtml(row.品类)} · ${escapeHtml(row.规则类别)}</strong><p>${escapeHtml(triggerReason(row))}</p></div>
                 <span>${formatNumber(row.上周期触发次数, 0)} → ${formatNumber(row.本周期触发次数, 0)}</span>
               </div>`).join("") : emptyState()}
           </div>
@@ -980,7 +1252,7 @@ function renderLingxing() {
           ${compareList(savingRules.flatMap((row) => [
             { label: `${row.标准规则类别} · 无出单`, previous: row.上周期无出单节费, current: row.本周期无出单节费, formatter: (v) => formatCurrency(v, true) },
             { label: `${row.标准规则类别} · ACoS高`, previous: row.上周期ACOS节费, current: row.本周期ACOS节费, formatter: (v) => formatCurrency(v, true) },
-          ]), { previousVisible, currentVisible })}
+          ]), { previousVisible, currentVisible, wrapLabels: true })}
         </div>
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>否词触发观察</h4><p>仅统计动作次数，不计入主理论节费</p></div>${legendMarkup()}</div>
@@ -990,15 +1262,27 @@ function renderLingxing() {
       <div class="method-note">理论节费为规则识别出的低效花费规模，采用去重后、按取数周期折算的月化口径，不等同于实际利润提升。</div>
     </section>
     <section class="dashboard-section" id="saving-detail">
-      ${sectionHead("节费规则触发明细", "产品(ASIN)暂停、关键词/PAT暂停展示月化理论节费；否词金额以横杠标记。", `${detailRows.length} 条`)}
+      ${sectionHead("节费规则触发明细", "产品(ASIN)暂停、关键词/PAT暂停展示月化去重理论节费；否词金额以横杠标记。", `${detailRows.length} 条`)}
+      ${detailFilterMarkup("lingxing_rules_detail", {
+        options: ["关键词/PAT暂停", "产品(ASIN)暂停", "否词"],
+        searchLabel: "节费明细关键词",
+        placeholder: "搜索广告活动名称或标签关键词",
+      })}
+      <div class="detail-summary-grid">
+        ${detailMetricCard("广告活动数量", detailSummary.campaigns, "integer", "广告活动去重计数")}
+        ${detailMetricCard("花费", detailSummary.spend, "currency")}
+        ${detailMetricCard("订单", detailSummary.orders, "integer")}
+        ${detailMetricCard("销售额", detailSummary.sales, "currency")}
+        ${detailMetricCard("主理论节费", detailSummary.saving, "currency", "月化去重后")}
+      </div>
       ${tableMarkup("lingxing-detail-table", detailRows, detailColumns, 50)}
-      <div class="method-note">仅展示产品(ASIN)暂停、关键词/PAT暂停及否词类触发；CPC调整、广告位调优、库存类规则不纳入本明细。</div>
+      <div class="method-note">花费、订单与销售额为当前筛选触发记录的取数窗口字段汇总，不等同整月广告表现。重复触发保留在明细中，但仅代表记录承载月化去重理论节费；CPC调整、广告位调优、库存类规则不纳入本明细。</div>
     </section>`;
 }
 
 function batchFilterConfig(data) {
   return [
-    { id: "month", label: "月份", options: data.filters.月份 || [] },
+    { id: "month", label: "月份", options: (data.filters.月份 || []).map(String) },
     { id: "category", label: "品类", options: data.filters.品类 || [] },
     { id: "team", label: "团队", options: data.filters.团队 || [] },
     { id: "owner", label: "品类负责人", options: data.filters.品类负责人 || [] },
@@ -1009,17 +1293,45 @@ function batchAggregate(rows) {
   const batchCount = sum(rows, "批量活动数量");
   const allCount = sum(rows, "全部活动数量");
   const spend = sum(rows, "批量广告花费");
-  const sales = rows.reduce((total, row) => {
-    const acos = asNumber(row.批量ACOS);
-    return total + (acos ? asNumber(row.批量广告花费) / acos : 0);
-  }, 0);
+  const sales = sum(rows, "批量销售额");
+  const totalSpend = sum(rows, "品类总花费");
+  const totalSales = sum(rows, "品类总销售额");
   return {
     batchCount,
     allCount,
     coverage: safeDivide(batchCount, allCount),
     spend,
-    acos: safeDivide(spend, sales),
+    sales,
+    totalSpend,
+    totalSales,
+    acos: spend > 0 && sales > 0 ? spend / sales : null,
+    categoryAcos: totalSpend > 0 && totalSales > 0 ? totalSpend / totalSales : null,
+    salesContribution: totalSales > 0 ? sales / totalSales : null,
   };
+}
+
+function batchRowsByDimension(rows, dimensionField, options = {}) {
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const dimension = row[dimensionField] || "未匹配";
+    const key = options.combineMonths ? dimension : `${row.月份}::${dimension}`;
+    if (!grouped.has(key)) grouped.set(key, { 月份: options.periodLabel || row.月份, 维度: dimension });
+    const target = grouped.get(key);
+    ["批量活动数量", "全部活动数量", "批量广告花费", "批量销售额", "品类总花费", "品类总销售额"].forEach((field) => {
+      target[field] = asNumber(target[field]) + asNumber(row[field]);
+    });
+  });
+  return [...grouped.values()].map((row) => {
+    const aggregate = batchAggregate([row]);
+    return {
+      ...row,
+      活动覆盖率: aggregate.coverage,
+      批量ACOS: aggregate.acos,
+      品类平均ACOS: aggregate.categoryAcos,
+      ACOS差异: aggregate.acos !== null && aggregate.categoryAcos !== null ? aggregate.categoryAcos - aggregate.acos : null,
+      批量销售贡献率: aggregate.salesContribution,
+    };
+  });
 }
 
 function renderBatch() {
@@ -1031,35 +1343,56 @@ function renderBatch() {
   const teamSet = selectedSet("batch_launch", "team");
   const ownerSet = selectedSet("batch_launch", "owner");
   const query = (state.searchApplied.batch_launch || "").trim().toLowerCase();
-  const categoryRows = (data.summary_by_category || []).filter((row) => monthSet.has(row.月份) && categorySet.has(row.维度) && (!query || String(row.维度).toLowerCase().includes(query)));
-  const teamRows = (data.summary_by_team || []).filter((row) => monthSet.has(row.月份) && teamSet.has(row.维度));
-  const ownerRows = (data.summary_by_owner || []).filter((row) => monthSet.has(row.月份) && ownerSet.has(row.维度));
-  const latestMonth = [...monthSet].sort((a, b) => Number(b) - Number(a))[0];
-  const previousMonth = [...monthSet].sort((a, b) => Number(a) - Number(b))[0];
-  const currentRows = categoryRows.filter((row) => row.月份 === latestMonth);
-  const previousRows = categoryRows.filter((row) => row.月份 === previousMonth && previousMonth !== latestMonth);
-  const current = batchAggregate(currentRows);
-  const previous = previousRows.length ? batchAggregate(previousRows) : null;
-  const coverageRows = [...currentRows].sort((a, b) => b.活动覆盖率 - a.活动覆盖率);
-  const acosRows = [...currentRows].sort((a, b) => b.批量广告花费 - a.批量广告花费);
+  const selectedMonths = [...monthSet].sort((a, b) => Number(a) - Number(b));
+  const periodLabel = selectedMonths.join("+");
+  const categoryAllSelected = isAllSelected("batch_launch", configs.find((config) => config.id === "category"));
+  const crossRows = (data.summary_cross || []).filter((row) => monthSet.has(String(row.月份))
+    && (categoryAllSelected || categorySet.has(row.品类))
+    && teamSet.has(row.团队)
+    && ownerSet.has(row.品类负责人)
+    && (!query || String(row.品类).toLowerCase().includes(query)));
+  const monthlyCategoryRows = batchRowsByDimension(crossRows, "品类");
+  const eligibleCategoryMonths = new Set(monthlyCategoryRows
+    .filter((row) => row.批量广告花费 > 0)
+    .map((row) => `${row.月份}::${row.维度}`));
+  const eligibleCrossRows = crossRows.filter((row) => eligibleCategoryMonths.has(`${row.月份}::${row.品类}`));
+  const categoryRows = batchRowsByDimension(eligibleCrossRows, "品类", { combineMonths: true, periodLabel });
+  const teamRows = batchRowsByDimension(eligibleCrossRows, "团队", { combineMonths: true, periodLabel }).filter((row) => row.批量广告花费 > 0);
+  const ownerRows = batchRowsByDimension(eligibleCrossRows, "品类负责人", { combineMonths: true, periodLabel }).filter((row) => row.批量广告花费 > 0);
+  const latestMonth = selectedMonths.at(-1);
+  const previousMonth = selectedMonths.length > 1 ? selectedMonths.at(-2) : null;
+  const currentRows = monthlyCategoryRows.filter((row) => String(row.月份) === latestMonth && row.批量广告花费 > 0);
+  const current = batchAggregate(crossRows.filter((row) => String(row.月份) === latestMonth));
+  const previous = previousMonth ? batchAggregate(crossRows.filter((row) => String(row.月份) === previousMonth)) : null;
+  const coverageRows = [...categoryRows].filter((row) => row.全部活动数量 > 0).sort((a, b) => b.活动覆盖率 - a.活动覆盖率);
+  const coverageMax = niceFractionMax(coverageRows.map((row) => row.活动覆盖率));
+  const acosRows = categoryRows.map((row) => ({
+    ...row,
+    ACoS差值: row.批量ACOS !== null && row.品类平均ACOS !== null ? row.品类平均ACOS - row.批量ACOS : null,
+  })).sort((a, b) => {
+    if (a.ACoS差值 === null) return 1;
+    if (b.ACoS差值 === null) return -1;
+    return state.ui.batchAcosSort === "asc" ? a.ACoS差值 - b.ACoS差值 : b.ACoS差值 - a.ACoS差值;
+  });
+  const acosMax = niceFractionMax(acosRows.flatMap((row) => [row.批量ACOS, row.品类平均ACOS].filter((value) => value !== null && value > 0)));
 
-  const monthScale = unique((data.summary_by_category || []).map((row) => row.月份)).filter((month) => monthSet.has(month)).map((month) => {
-    const rows = (data.summary_by_category || []).filter((row) => row.月份 === month && categorySet.has(row.维度) && (!query || String(row.维度).toLowerCase().includes(query)));
-    return { label: month === 202605 ? "5月" : month === 202606 ? "6月" : String(month), value: sum(rows, "批量活动数量") };
+  const monthScale = selectedMonths.map((month) => {
+    const aggregate = batchAggregate(crossRows.filter((row) => String(row.月份) === month));
+    return { label: month === "202605" ? "5月" : month === "202606" ? "6月" : month, value: aggregate.batchCount };
   });
 
   let summaryRows = categoryRows;
   let summaryColumns = [
-    { field: "月份", label: "月份", render: (v) => v === 202605 ? "2026-05" : v === 202606 ? "2026-06" : escapeHtml(v) },
+    { field: "月份", label: "所选月份", render: (v) => String(v).split("+").map((month) => month === "202605" ? "2026-05" : month === "202606" ? "2026-06" : month).join(" + ") },
     { field: "维度", label: "品类" },
     { field: "批量活动数量", label: "批量活动数量", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "全部活动数量", label: "全部活动数量", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "活动覆盖率", label: "活动覆盖率", numeric: true, render: (v) => formatPercent(v, true) },
     { field: "批量广告花费", label: "批量广告花费", numeric: true, render: (v) => formatCurrency(v) },
-    { field: "批量ACOS", label: "批量 ACoS", numeric: true, render: (v) => formatPercent(v, true) },
-    { field: "品类平均ACOS", label: "品类平均 ACoS", numeric: true, render: (v) => formatPercent(v, true) },
-    { field: "ACOS差异", label: "ACoS 差异", numeric: true, render: (v) => formatPercent(v, true) },
-    { field: "批量销售贡献率", label: "批量销售贡献率", numeric: true, render: (v) => formatPercent(v, true) },
+    { field: "批量ACOS", label: "批量 ACoS", numeric: true, render: (v) => v === null || asNumber(v) <= 0 ? "-" : formatPercent(v, true) },
+    { field: "品类平均ACOS", label: "品类平均 ACoS", numeric: true, render: (v) => v === null || asNumber(v) <= 0 ? "-" : formatPercent(v, true) },
+    { field: "ACOS差异", label: "品类平均 - 批量", numeric: true, render: (v) => v === null ? "-" : formatSignedFractionPercent(v) },
+    { field: "批量销售贡献率", label: "批量销售贡献率", numeric: true, render: (v) => v === null ? "-" : formatPercent(v, true) },
   ];
   if (state.ui.batchSummaryTab === "team") {
     summaryRows = teamRows;
@@ -1069,18 +1402,18 @@ function renderBatch() {
     summaryRows = ownerRows;
     summaryColumns = summaryColumns.map((column) => column.field === "维度" ? { ...column, label: "品类负责人" } : column);
   }
-  summaryRows = [...summaryRows].sort((a, b) => b.月份 - a.月份 || b.批量活动数量 - a.批量活动数量);
+  summaryRows = [...summaryRows].sort((a, b) => b.批量活动数量 - a.批量活动数量);
 
   root.innerHTML = `
     ${introMarkup("批量投放系统运营看板", "查看批量活动创建规模、活动覆盖率及批量 ACoS 与品类平均的差异。")}
     <div class="kpi-grid">
-      ${kpiCard({ label: "创建广告数量", value: current.batchCount, previous: previous?.batchCount, valueType: "integer", tone: "primary", note: latestMonth ? `${String(latestMonth).slice(0, 4)}年${String(latestMonth).slice(4)}月` : "当前筛选" })}
+      ${kpiCard({ label: "批量投放规模", description: "广告活动数量", value: current.batchCount, previous: previous?.batchCount, valueType: "integer", tone: "primary", note: latestMonth ? `${String(latestMonth).slice(0, 4)}年${String(latestMonth).slice(4)}月` : "当前筛选" })}
       ${kpiCard({ label: "活动覆盖率", value: current.coverage, previous: previous?.coverage, valueType: "fractionPercent", tone: "teal", note: "批量活动数 / 全部活动数" })}
       ${kpiCard({ label: "批量广告花费", value: current.spend, previous: previous?.spend, valueType: "currency", tone: "orange", inverse: true })}
       ${kpiCard({ label: "批量 ACoS", value: current.acos, previous: previous?.acos, valueType: "fractionPercent", tone: "red", inverse: true })}
-      ${kpiCard({ label: "当前覆盖品类", value: currentRows.length, valueType: "integer", tone: "green", note: "当前月份与品类筛选" })}
+      ${kpiCard({ label: "当前覆盖品类", value: currentRows.length, valueType: "integer", tone: "green", note: "当前月份且批量花费大于 0" })}
     </div>
-    ${filterMarkup("batch_launch", configs, { label: "品类关键词", placeholder: "搜索品类" }, `${categoryRows.length} 条品类月度汇总`)}
+    ${filterMarkup("batch_launch", configs, { label: "品类关键词", placeholder: "搜索品类" }, `${categoryRows.length} 个有批量花费的品类`)}
     <section class="dashboard-section" id="batch-scale">
       ${sectionHead("批量投放规模", "按月比较批量活动数量，不展示花费趋势。", "5月 vs 6月")}
       <div class="chart-panel chart-panel--full">
@@ -1088,26 +1421,29 @@ function renderBatch() {
       </div>
     </section>
     <section class="dashboard-section" id="batch-coverage">
-      ${sectionHead("活动覆盖率", "数量覆盖率 = 批量活动数量 / 全部活动数量。", `${coverageRows.length} 个品类`)}
+      ${sectionHead("活动覆盖率", "数量覆盖率 = 所选月份批量活动数量 / 全部活动数量；多月选择时合并计算。", `${coverageRows.length} 个品类`)}
       <div class="chart-panel chart-panel--full">
-        ${horizontalBarChart(coverageRows.map((row) => ({ label: row.维度, value: row.活动覆盖率 })), { max: 1, formatter: (v) => formatPercent(v, true) })}
+        ${horizontalBarChart(coverageRows.map((row) => ({ label: row.维度, value: row.活动覆盖率 })), { max: coverageMax, showAxis: true, formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0) })}
       </div>
     </section>
     <section class="dashboard-section" id="batch-acos">
-      ${sectionHead("批量 ACoS vs 品类平均", "点位越靠左表示 ACoS 越低；同品类直接比较批量活动与品类平均。", `${acosRows.length} 个品类`)}
+      ${sectionHead("批量 ACoS vs 品类平均", "所选月份合并花费与销售额后重算 ACoS；无批量销售额时批量 ACoS 显示横杠。", `${acosRows.length} 个品类`)}
       <div class="chart-panel chart-panel--full">
-        <div class="chart-title-row"><div></div>${legendMarkup("批量 ACoS", "品类平均 ACoS")}</div>
-        ${dumbbellChart(acosRows.map((row) => ({ label: row.维度, previous: row.批量ACOS, current: row.品类平均ACOS })), { formatter: (v) => formatPercent(v, true) })}
+        <div class="chart-title-row">
+          ${segmentControl("batch-acos-sort", [["desc", "差值从高到低"], ["asc", "差值从低到高"]], state.ui.batchAcosSort)}
+          ${legendMarkup("批量 ACoS", "品类平均 ACoS")}
+        </div>
+        ${dumbbellChart(acosRows.map((row) => ({ label: row.维度, previous: row.批量ACOS, current: row.品类平均ACOS, difference: row.ACoS差值 })), { min: 0, max: acosMax, showAxis: true, hideNonPositive: true, formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0), differenceFormatter: formatSignedFractionPercent })}
       </div>
     </section>
     <section class="dashboard-section" id="batch-summary">
-      ${sectionHead("批量投放汇总明细", "使用月度汇总表，不读取活动级大底表。", `${summaryRows.length} 条`)}
+      ${sectionHead("批量投放汇总明细", "按所选月份合并汇总；无批量花费的品类不展示。", `${summaryRows.length} 条`)}
       <div class="chart-title-row">
         <div></div>
         ${segmentControl("batch-summary", [["category", "按品类"], ["team", "按团队"], ["owner", "按负责人"]], state.ui.batchSummaryTab)}
       </div>
       ${tableMarkup("batch-summary-table", summaryRows, summaryColumns, 50)}
-      <div class="method-note">顶部 KPI、投放规模、覆盖率和 ACoS 图响应月份与品类筛选；团队和负责人筛选用于对应汇总明细。</div>
+      <div class="method-note">月份、品类、团队与品类负责人均会联动更新顶部 KPI、投放规模、覆盖率、ACoS 对比和汇总明细。</div>
     </section>`;
 }
 
@@ -1131,6 +1467,12 @@ function renderCurrentPage() {
 }
 
 function updateMultiSelectButton(select) {
+  const detailPanel = select.closest("[data-detail-filter]");
+  if (detailPanel) {
+    const detailState = state.detailFilters[detailPanel.dataset.detailFilter];
+    select.querySelector(".multi-select__button").textContent = detailSelectedLabel(detailState);
+    return;
+  }
   const pageId = select.closest("[data-page-filter]").dataset.pageFilter;
   const filterId = select.dataset.filterId;
   let configs;
@@ -1149,6 +1491,26 @@ function closeMultiSelects(except = null) {
     select.querySelector(".multi-select__menu")?.classList.add("is-hidden");
     select.querySelector(".multi-select__button")?.setAttribute("aria-expanded", "false");
   });
+}
+
+function filterMultiSelectOptions(input) {
+  const select = input.closest(".multi-select");
+  const labels = [...select.querySelectorAll(".check-option")];
+  const query = input.value.trim();
+  let visibleCount = 0;
+  labels.forEach((label) => {
+    const option = label.querySelector('input[type="checkbox"]')?.value || "";
+    const isVisible = fuzzyOptionMatch(option, query);
+    label.classList.toggle("is-option-hidden", !isVisible);
+    if (isVisible) visibleCount += 1;
+  });
+  const count = select.querySelector(".multi-select__search-count");
+  if (count) count.textContent = query ? `${visibleCount}/${labels.length} 项` : `${labels.length} 项`;
+  select.querySelector(".multi-select__empty")?.classList.toggle("is-hidden", visibleCount > 0);
+  const allButton = select.querySelector('[data-select-action="all"]');
+  const clearButton = select.querySelector('[data-select-action="clear"]');
+  if (allButton) allButton.textContent = query ? "全选匹配" : "全选";
+  if (clearButton) clearButton.textContent = query ? "清除匹配" : "清除";
 }
 
 function applyFilters(pageId) {
@@ -1191,25 +1553,80 @@ function handleRootClick(event) {
     select.classList.toggle("is-open", shouldOpen);
     select.querySelector(".multi-select__menu").classList.toggle("is-hidden", !shouldOpen);
     selectButton.setAttribute("aria-expanded", String(shouldOpen));
+    if (shouldOpen) window.requestAnimationFrame(() => select.querySelector(".multi-select__search")?.focus());
     return;
   }
 
   const selectAction = event.target.closest("[data-select-action]");
   if (selectAction) {
     const select = selectAction.closest(".multi-select");
-    const pageId = select.closest("[data-page-filter]").dataset.pageFilter;
-    const filterId = select.dataset.filterId;
     const checkboxes = [...select.querySelectorAll('input[type="checkbox"]')];
     const isAll = selectAction.dataset.selectAction === "all";
-    state.filterDraft[pageId][filterId] = new Set(isAll ? checkboxes.map((box) => box.value) : []);
-    checkboxes.forEach((box) => { box.checked = isAll; });
+    const optionSearch = select.querySelector(".multi-select__search");
+    const hasOptionSearch = Boolean(optionSearch?.value.trim());
+    const targetCheckboxes = hasOptionSearch
+      ? checkboxes.filter((box) => !box.closest(".check-option").classList.contains("is-option-hidden"))
+      : checkboxes;
+    const detailPanel = select.closest("[data-detail-filter]");
+    let values;
+    if (detailPanel) {
+      const detailState = state.detailFilters[detailPanel.dataset.detailFilter];
+      values = hasOptionSearch ? cloneSet(detailState.ruleDraft) : new Set();
+      targetCheckboxes.forEach((box) => isAll ? values.add(box.value) : values.delete(box.value));
+      detailState.ruleDraft = values;
+    } else {
+      const pageId = select.closest("[data-page-filter]").dataset.pageFilter;
+      const filterId = select.dataset.filterId;
+      values = hasOptionSearch ? cloneSet(state.filterDraft[pageId][filterId]) : new Set();
+      targetCheckboxes.forEach((box) => isAll ? values.add(box.value) : values.delete(box.value));
+      state.filterDraft[pageId][select.dataset.filterId] = values;
+    }
+    checkboxes.forEach((box) => { box.checked = values.has(box.value); });
     updateMultiSelectButton(select);
+    return;
+  }
+
+  const detailQueryButton = event.target.closest("[data-detail-query]");
+  if (detailQueryButton) {
+    const panel = detailQueryButton.closest("[data-detail-filter]");
+    const detailState = state.detailFilters[panel.dataset.detailFilter];
+    detailState.ruleApplied = cloneSet(detailState.ruleDraft);
+    const search = panel.querySelector(".search-input");
+    detailState.searchDraft = search?.value || "";
+    detailState.searchApplied = detailState.searchDraft;
+    Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
+    closeMultiSelects();
+    renderCurrentPage();
+    showToast("明细筛选已应用");
+    return;
+  }
+
+  const detailClearButton = event.target.closest("[data-detail-search-clear]");
+  if (detailClearButton) {
+    const panel = detailClearButton.closest("[data-detail-filter]");
+    const detailState = state.detailFilters[panel.dataset.detailFilter];
+    detailState.searchDraft = "";
+    detailState.searchApplied = "";
+    Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
+    renderCurrentPage();
+    showToast("明细关键词已清除");
     return;
   }
 
   const queryButton = event.target.closest("[data-filter-query]");
   if (queryButton) {
     applyFilters(queryButton.closest("[data-page-filter]").dataset.pageFilter);
+    return;
+  }
+
+  const clearSearchButton = event.target.closest("[data-search-clear]");
+  if (clearSearchButton) {
+    const pageId = clearSearchButton.closest("[data-page-filter]").dataset.pageFilter;
+    state.searchDraft[pageId] = "";
+    state.searchApplied[pageId] = "";
+    Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
+    renderCurrentPage();
+    showToast("关键词已清除");
     return;
   }
 
@@ -1226,6 +1643,7 @@ function handleRootClick(event) {
     if (segment === "monthly-category") state.ui.monthlyCategoryTab = value;
     if (segment === "invalid-detail") state.ui.invalidDetailTab = value;
     if (segment === "batch-summary") state.ui.batchSummaryTab = value;
+    if (segment === "batch-acos-sort") state.ui.batchAcosSort = value;
     renderCurrentPage();
     document.getElementById(segment)?.scrollIntoView({ block: "start" });
     return;
@@ -1246,6 +1664,14 @@ function handleRootChange(event) {
   const checkbox = event.target.closest('.multi-select input[type="checkbox"]');
   if (!checkbox) return;
   const select = checkbox.closest(".multi-select");
+  const detailPanel = select.closest("[data-detail-filter]");
+  if (detailPanel) {
+    const selected = state.detailFilters[detailPanel.dataset.detailFilter].ruleDraft;
+    if (checkbox.checked) selected.add(checkbox.value);
+    else selected.delete(checkbox.value);
+    updateMultiSelectButton(select);
+    return;
+  }
   const pageId = select.closest("[data-page-filter]").dataset.pageFilter;
   const filterId = select.dataset.filterId;
   const selected = state.filterDraft[pageId][filterId];
@@ -1255,23 +1681,55 @@ function handleRootChange(event) {
 }
 
 function handleRootInput(event) {
+  if (event.target.matches(".multi-select__search")) {
+    filterMultiSelectOptions(event.target);
+    return;
+  }
   if (!event.target.matches(".search-input")) return;
+  const detailPanel = event.target.closest("[data-detail-filter]");
+  if (detailPanel) {
+    state.detailFilters[detailPanel.dataset.detailFilter].searchDraft = event.target.value;
+    return;
+  }
   const pageId = event.target.closest("[data-page-filter]").dataset.pageFilter;
   state.searchDraft[pageId] = event.target.value;
 }
 
-let sectionObserver;
-function bindSectionObserver() {
-  sectionObserver?.disconnect();
+let sectionScrollHandler;
+
+function setActiveSubnav(targetId) {
+  subnav.querySelectorAll(".subnav-link").forEach((link) => {
+    link.classList.toggle("is-active", link.getAttribute("href") === `#${targetId}`);
+  });
+}
+
+function updateActiveSubnav() {
   const links = [...subnav.querySelectorAll(".subnav-link")];
   const targets = links.map((link) => document.querySelector(link.getAttribute("href"))).filter(Boolean);
-  if (!targets.length || !("IntersectionObserver" in window)) return;
-  sectionObserver = new IntersectionObserver((entries) => {
-    const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
-    if (!visible) return;
-    links.forEach((link) => link.classList.toggle("is-active", link.getAttribute("href") === `#${visible.target.id}`));
-  }, { rootMargin: "-150px 0px -60% 0px", threshold: [0.05, 0.25, 0.6] });
-  targets.forEach((target) => sectionObserver.observe(target));
+  if (!targets.length) return;
+  const marker = Math.max(210, subnav.getBoundingClientRect().bottom + 14);
+  let active = targets[0];
+  targets.forEach((target) => {
+    if (target.getBoundingClientRect().top <= marker) active = target;
+  });
+  const pageBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
+  if (pageBottom) active = targets[targets.length - 1];
+  setActiveSubnav(active.id);
+}
+
+function bindSectionObserver() {
+  if (sectionScrollHandler) window.removeEventListener("scroll", sectionScrollHandler);
+  let scheduled = false;
+  sectionScrollHandler = () => {
+    if (scheduled) return;
+    scheduled = true;
+    window.requestAnimationFrame(() => {
+      scheduled = false;
+      updateActiveSubnav();
+    });
+  };
+  window.addEventListener("scroll", sectionScrollHandler, { passive: true });
+  updateActiveSubnav();
 }
 
 async function loadData() {
@@ -1303,7 +1761,7 @@ async function loadData() {
 
 document.querySelector(".primary-nav").addEventListener("click", (event) => {
   const button = event.target.closest("[data-page]");
-  if (!button || button.dataset.page === state.page) return;
+  if (!button || button.dataset.page === state.page || !state.data) return;
   state.page = button.dataset.page;
   window.scrollTo({ top: 0, behavior: "smooth" });
   renderCurrentPage();
@@ -1312,6 +1770,12 @@ document.querySelector(".primary-nav").addEventListener("click", (event) => {
 root.addEventListener("click", handleRootClick);
 root.addEventListener("change", handleRootChange);
 root.addEventListener("input", handleRootInput);
+subnav.addEventListener("click", (event) => {
+  const link = event.target.closest(".subnav-link");
+  if (!link) return;
+  setActiveSubnav(link.getAttribute("href").slice(1));
+  window.setTimeout(updateActiveSubnav, 50);
+});
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".multi-select")) closeMultiSelects();
 });

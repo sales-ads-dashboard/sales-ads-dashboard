@@ -9,6 +9,8 @@
 
 页面默认读取 `data/sales_ads_dashboard_data.json`。前端与数据处理脚本解耦，后续迁移公司内网或接入 API 时，只需修改 `assets/config.js` 中的数据地址。
 
+领星节费明细保留全部产品暂停、关键词/PAT暂停和否词触发；主理论节费采用月化去重口径，并由代表记录承载金额。批量模块先在数据脚本中把活动级数据预聚合为月份、品类、团队、品类负责人四维汇总，网页不读取活动级大底表；无批量花费的品类不展示，多月选择时只合并该品类有批量花费的月份并重新计算覆盖率与 ACoS。批量 ACoS 差值定义为“品类平均 ACoS - 批量 ACoS”，正值绿色表示批量投放更优。
+
 ## 本地预览
 
 在项目目录运行：
@@ -57,3 +59,10 @@ window.DASHBOARD_DATA_URL = "/api/sales-ads-dashboard";
 ```
 
 接口返回结构保持与当前统一 JSON 一致，页面代码无需改动。
+
+## 本地校验
+
+```bash
+node --check assets/app.js
+node ../work/dashboard_smoke_test.js
+```
