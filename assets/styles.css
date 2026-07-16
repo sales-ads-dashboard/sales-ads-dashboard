@@ -701,7 +701,7 @@ button {
 .section-meta {
   flex: 0 0 auto;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -740,7 +740,7 @@ button {
 .chart-title-row p {
   margin: 4px 0 0;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
 }
 
@@ -750,7 +750,8 @@ button {
   justify-content: flex-end;
   gap: 10px;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .legend-item {
@@ -760,8 +761,8 @@ button {
 }
 
 .legend-swatch {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 2px;
   background: var(--primary);
 }
@@ -1027,6 +1028,32 @@ button {
 
 .vertical-chart--category .vertical-bar.is-label-high span {
   top: -38px;
+}
+
+.vertical-chart--coverage {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  gap: 18px;
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+.vertical-chart--coverage .vertical-group {
+  width: 96px;
+  min-width: 96px;
+  grid-template-rows: 230px 42px;
+}
+
+.vertical-chart--coverage .vertical-bars {
+  padding: 0 24px;
+}
+
+.vertical-chart--coverage .vertical-group__label {
+  min-height: 42px;
+  padding: 0 3px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
 }
 
 .vertical-group__label {

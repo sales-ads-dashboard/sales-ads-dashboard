@@ -458,7 +458,7 @@ function verticalCompareChart(rows, options = {}) {
   const currentVisible = options.currentVisible !== false;
   const values = rows.flatMap((row) => [asNumber(row.previous), asNumber(row.current)]);
   const max = Math.max(...values.map(Math.abs), 1);
-  const scaleMax = max / (options.maxFillRatio || 0.86);
+  const scaleMax = options.scaleMax ? asNumber(options.scaleMax) : max / (options.maxFillRatio || 0.86);
   const formatter = options.formatter || ((value) => formatCompact(value));
   const chart = `<div class="vertical-chart ${escapeHtml(options.className || "")}">${rows.map((row) => {
     const previous = asNumber(row.previous);
@@ -599,10 +599,9 @@ function numericComparisonTable(rows, options = {}) {
 function triggerReason(row) {
   const previous = asNumber(row.上周期触发次数);
   const current = asNumber(row.本周期触发次数);
-  if (previous === 0 && current >= 5) {
-    return `上周期为0，本周期新增触发且达到${formatNumber(current, 0)}次`;
-  }
-  return row.判断依据 || "-";
+  if (current > previous) return "规则触发次数大幅增长";
+  if (current < previous) return "规则触发次数大幅下降";
+  return "规则触发次数变化较大";
 }
 
 function niceFractionMax(values) {
@@ -635,7 +634,7 @@ function tagMarkup(value) {
   const text = String(value ?? "-");
   let className = "";
   if (["异常升高", "无效", "广告活动超预算", "广告组合超预算"].includes(text)) className = "is-danger";
-  if (["触发偏低", "低效", "广告活动已暂停"].includes(text)) className = "is-warning";
+  if (["触发偏低", "触发次数变化较大", "低效", "广告活动已暂停"].includes(text)) className = "is-warning";
   if (["正常", "投放中"].includes(text)) className = "is-good";
   return `<span class="tag ${className}">${escapeHtml(text)}</span>`;
 }
@@ -1125,7 +1124,8 @@ function renderLingxing() {
     previous: (row) => row.上周期触发次数,
     current: (row) => row.本周期触发次数,
   }).sort((a, b) => b.current - a.current);
-  const alerts = triggerRows.filter((row) => ["触发偏低", "异常升高", "无触发"].includes(row.状态))
+  const alerts = triggerRows.filter((row) => asNumber(row.上周期触发次数) > 0
+      && ["触发偏低", "异常升高", "异常降低", "无触发"].includes(row.状态))
     .sort((a, b) => Math.abs(asNumber(b.增长偏离基准)) - Math.abs(asNumber(a.增长偏离基准)));
 
   const savingCategory = (data.summary.saving_dashboard.by_category || []).filter((row) => {
@@ -1209,7 +1209,7 @@ function renderLingxing() {
     <div class="kpi-grid kpi-grid--six">${kpis}</div>
     ${filterMarkup("lingxing_rules", configs, null, `${triggerRows.length} 个监控组合`)}
     <section class="dashboard-section" id="trigger-monitor">
-      ${sectionHead("规则触发监控", "触发偏低或异常升高参照同品类、同规则与整体增长幅度判断。", `${alerts.length} 个待关注组合`)}
+      ${sectionHead("规则触发监控", "对比同品类、同规则与整体变化基准，关注触发次数明显偏离的规则。", `${alerts.length} 个待关注组合`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>触发次数 Top 品类</h4></div>${legendMarkup()}</div>
@@ -1217,18 +1217,18 @@ function renderLingxing() {
         </div>
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>规则类别触发对比</h4></div>${legendMarkup()}</div>
-          ${compareList(ruleRows.slice(0, 12).map((row) => ({ label: row.规则类别, previous: row.previous, current: row.current, formatter: (v) => formatNumber(v, 0) })), { previousVisible, currentVisible })}
+          ${compareList(ruleRows.slice(0, 12).map((row) => ({ label: row.规则类别, previous: row.previous, current: row.current, formatter: (v) => formatNumber(v, 0) })), { previousVisible, currentVisible, wrapLabels: true })}
         </div>
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>运营组长触发对比</h4></div>${legendMarkup()}</div>
           ${verticalCompareChart(ownerRows.map((row) => ({ label: row.运营组长, previous: row.previous, current: row.current })), { previousVisible, currentVisible, formatter: (v) => formatCompact(v) })}
         </div>
         <div class="chart-panel">
-          <div class="chart-title-row"><div><h4>触发异常与偏低</h4><p>按增长率偏离综合基准排序</p></div></div>
+          <div class="chart-title-row"><div><h4>触发次数变化较大的规则</h4><p>不包含上周期未触发、本周期新增触发的规则</p></div></div>
           <div class="alert-list">
             ${alerts.length ? alerts.slice(0, 10).map((row) => `
               <div class="alert-item">
-                ${tagMarkup(row.状态)}
+                ${tagMarkup("触发次数变化较大")}
                 <div><strong>${escapeHtml(row.品类)} · ${escapeHtml(row.规则类别)}</strong><p>${escapeHtml(triggerReason(row))}</p></div>
                 <span>${formatNumber(row.上周期触发次数, 0)} → ${formatNumber(row.本周期触发次数, 0)}</span>
               </div>`).join("") : emptyState()}
@@ -1276,7 +1276,7 @@ function renderLingxing() {
         ${detailMetricCard("主理论节费", detailSummary.saving, "currency", "月化去重后")}
       </div>
       ${tableMarkup("lingxing-detail-table", detailRows, detailColumns, 50)}
-      <div class="method-note">花费、订单与销售额为当前筛选触发记录的取数窗口字段汇总，不等同整月广告表现。重复触发保留在明细中，但仅代表记录承载月化去重理论节费；CPC调整、广告位调优、库存类规则不纳入本明细。</div>
+      <div class="method-note">花费、订单与销售额为当前筛选触发记录的取数窗口字段汇总，不等同整月广告表现。重复触发保留在明细中，但仅代表记录承载月化去重理论节费；CPC调整、广告位调优、库存类规则、广告活动暂停和广告组暂停不纳入本明细。</div>
     </section>`;
 }
 
@@ -1423,11 +1423,11 @@ function renderBatch() {
     <section class="dashboard-section" id="batch-coverage">
       ${sectionHead("活动覆盖率", "数量覆盖率 = 所选月份批量活动数量 / 全部活动数量；多月选择时合并计算。", `${coverageRows.length} 个品类`)}
       <div class="chart-panel chart-panel--full">
-        ${horizontalBarChart(coverageRows.map((row) => ({ label: row.维度, value: row.活动覆盖率 })), { max: coverageMax, showAxis: true, formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0) })}
+        ${verticalCompareChart(coverageRows.map((row) => ({ label: row.维度, previous: 0, current: row.活动覆盖率 })), { previousVisible: false, currentVisible: true, scaleMax: coverageMax, showYAxis: true, className: "vertical-chart--coverage", formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0) })}
       </div>
     </section>
     <section class="dashboard-section" id="batch-acos">
-      ${sectionHead("批量 ACoS vs 品类平均", "所选月份合并花费与销售额后重算 ACoS；无批量销售额时批量 ACoS 显示横杠。", `${acosRows.length} 个品类`)}
+      ${sectionHead("批量 ACoS vs 品类平均", "所选月份合并花费与销售额后重算 ACoS；无批量销售额时，右侧批量 ACoS 数值显示横杠。", `${acosRows.length} 个品类`)}
       <div class="chart-panel chart-panel--full">
         <div class="chart-title-row">
           ${segmentControl("batch-acos-sort", [["desc", "差值从高到低"], ["asc", "差值从低到高"]], state.ui.batchAcosSort)}
