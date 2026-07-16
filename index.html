@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="description" content="销售广告中台月度复盘、无效低效、领星规则与批量投放运营看板" />
+    <title>销售广告中台</title>
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#dashboard-main">跳到主要内容</a>
+
+    <header class="app-header">
+      <div class="app-header__inner">
+        <div class="brand-block">
+          <span class="brand-mark" aria-hidden="true">AD</span>
+          <div>
+            <p class="brand-kicker">销售广告中台</p>
+            <h1 id="page-title">月度广告数据复盘看板</h1>
+          </div>
+        </div>
+
+        <nav class="primary-nav" aria-label="看板导航">
+          <button class="nav-button is-active" type="button" data-page="monthly_review">
+            月度复盘
+          </button>
+          <button class="nav-button" type="button" data-page="invalid_low_efficiency">
+            无效低效
+          </button>
+          <button class="nav-button" type="button" data-page="lingxing_rules">
+            领星规则
+          </button>
+          <button class="nav-button" type="button" data-page="batch_launch">
+            批量投放
+          </button>
+        </nav>
+
+        <div class="data-status" id="data-status" aria-live="polite">
+          <span class="status-dot"></span>
+          <span>正在读取数据</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="subnav-shell">
+      <nav class="subnav" id="subnav" aria-label="当前看板分区"></nav>
+    </div>
+
+    <main id="dashboard-main" class="dashboard-main" tabindex="-1">
+      <section class="loading-state" id="loading-state" aria-live="polite">
+        <div class="loading-bar"><span></span></div>
+        <p>正在加载月度复盘数据...</p>
+      </section>
+      <section class="error-state is-hidden" id="error-state" aria-live="assertive">
+        <h2>数据加载失败</h2>
+        <p id="error-message"></p>
+        <button type="button" class="button button--primary" id="retry-button">重新加载</button>
+      </section>
+      <div id="page-root"></div>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="assets/config.js"></script>
+    <script src="assets/app.js" defer></script>
+  </body>
+</html>
