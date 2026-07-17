@@ -35,6 +35,7 @@ const PAGE_CONFIG = {
       ["batch-coverage", "活动覆盖率"],
       ["batch-acos", "批量 ACOS 对比"],
       ["batch-summary", "批量投放汇总明细"],
+      ["batch-operation-detail", "批量投放批次查询"],
     ],
   },
 };
@@ -1010,18 +1011,18 @@ function renderInvalid() {
   ];
 
   root.innerHTML = `
-    ${introMarkup("无效低效广告复盘", "按既有清洗结果查看无效、低效广告活动及可节约花费，不在前端重新判定。", "2026年6月")}
+    ${introMarkup("无效低效广告复盘", "无效广告定义：近30天广告花费>5美金、订单=0、广告投放天数>14天、广告状态为投放中；低效广告定义：1.近30天点击数>15、广告花费<5美金、订单=0、广告投放天数>14天；2.ACOS>60%、广告投放天数>14天、广告状态为投放中", "2026年6月")}
     <div class="kpi-grid kpi-grid--six">
       ${kpiCard({ label: "无效广告活动", value: invalidRows.length, valueType: "integer", tone: "red", note: `花费 ${formatCurrency(invalidSpend)}` })}
       ${kpiCard({ label: "低效广告活动", value: inefficientRows.length, valueType: "integer", tone: "orange", note: `花费 ${formatCurrency(inefficientSpend)}` })}
       ${kpiCard({ label: "节约广告花费", value: saving, valueType: "currency", tone: "green", note: "按品类与运营组长筛选" })}
       ${kpiCard({ label: "节约占总花费比例", value: safeDivide(saving, totalSpend) * 100, valueType: "percent", tone: "teal", note: `本月总花费 ${formatCurrency(totalSpend, true)}` })}
-      ${kpiCard({ label: "关停/归档活动", value: data.totals["本月关停/归档广告活动数量"], valueType: "integer", tone: "primary", note: "本月汇总口径" })}
+      ${kpiCard({ label: "关停/归档活动", value: data.totals["本月关停/归档广告活动数量"], valueType: "integer", tone: "primary", note: "本月汇总" })}
       ${kpiCard({ label: "无效与低效花费", value: invalidSpend + inefficientSpend, valueType: "currency", tone: "orange", note: "当前筛选范围" })}
     </div>
     ${filterMarkup("invalid_low_efficiency", configs, null, `${invalidRows.length + inefficientRows.length} 条活动`)}
     <section class="dashboard-section" id="invalid-analysis">
-      ${sectionHead("无效广告分析", "有花费无销售额的广告活动，沿用源表复盘标签。", `${invalidRows.length} 条`)}
+      ${sectionHead("无效广告分析", "有花费无销售额的广告活动。", `${invalidRows.length} 条`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>无效花费 Top 品类</h4></div></div>
@@ -1034,7 +1035,7 @@ function renderInvalid() {
       </div>
     </section>
     <section class="dashboard-section" id="inefficient-analysis">
-      ${sectionHead("低效广告分析", "有订单但 ACoS 偏高的广告活动，沿用源表复盘标签。", `${inefficientRows.length} 条`)}
+      ${sectionHead("低效广告分析", "有订单但 ACoS 偏高的广告活动。", `${inefficientRows.length} 条`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>低效花费 Top 品类</h4></div></div>
@@ -1047,7 +1048,7 @@ function renderInvalid() {
       </div>
     </section>
     <section class="dashboard-section" id="saving-analysis">
-      ${sectionHead("节约花费视角", "节约花费来源表仅包含品类和运营组长维度，因此本区块不受广告类型与服务状态筛选影响。", `${filteredSavingsCategory.length} 个品类`)}
+      ${sectionHead("节约花费视角", "本区块不受广告类型与服务状态筛选影响。", `${filteredSavingsCategory.length} 个品类`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>节约花费 Top 品类</h4></div></div>
@@ -1303,6 +1304,16 @@ function batchFilterConfig(data) {
   ];
 }
 
+function batchOperationFilterConfig(data) {
+  const filters = data.operation_filters || {};
+  return [
+    { id: "operator", label: "运营（多选）", options: filters.运营 || data.filters?.运营 || [] },
+    { id: "operationOwner", label: "运营组长（多选）", options: filters.运营组长 || [] },
+    { id: "operationMonth", label: "月份（多选）", options: (filters.月份 || []).map(String) },
+    { id: "operationCategory", label: "品类（多选）", options: filters.品类 || [] },
+  ];
+}
+
 function batchAggregate(rows) {
   const batchCount = sum(rows, "批量活动数量");
   const allCount = sum(rows, "全部活动数量");
@@ -1351,12 +1362,18 @@ function batchRowsByDimension(rows, dimensionField, options = {}) {
 function renderBatch() {
   const data = state.data.batch_launch;
   const configs = batchFilterConfig(data);
+  const operationConfigs = batchOperationFilterConfig(data);
   initializeFilters("batch_launch", configs);
+  initializeFilters("batch_operation_detail", operationConfigs);
   const monthSet = selectedSet("batch_launch", "month");
   const categorySet = selectedSet("batch_launch", "category");
   const teamSet = selectedSet("batch_launch", "team");
   const ownerSet = selectedSet("batch_launch", "owner");
   const query = (state.searchApplied.batch_launch || "").trim().toLowerCase();
+  const operatorSet = selectedSet("batch_operation_detail", "operator");
+  const operationOwnerSet = selectedSet("batch_operation_detail", "operationOwner");
+  const operationMonthSet = selectedSet("batch_operation_detail", "operationMonth");
+  const operationCategorySet = selectedSet("batch_operation_detail", "operationCategory");
   const selectedMonths = [...monthSet].sort((a, b) => Number(a) - Number(b));
   const periodLabel = selectedMonths.join("+");
   const categoryAllSelected = isAllSelected("batch_launch", configs.find((config) => config.id === "category"));
@@ -1394,6 +1411,29 @@ function renderBatch() {
     const aggregate = batchAggregate(crossRows.filter((row) => String(row.月份) === month));
     return { label: month === "202605" ? "5月" : month === "202606" ? "6月" : month, value: aggregate.batchCount };
   });
+
+  const operationRows = (data.operation_batch_rows || [])
+    .filter((row) => operatorSet.has(row.运营)
+      && operationOwnerSet.has(row.运营组长)
+      && operationMonthSet.has(String(row.月份))
+      && String(row.品类名称 || "").split("、").some((category) => operationCategorySet.has(category)))
+    .sort((a, b) => String(b.月份).localeCompare(String(a.月份))
+      || String(a.运营).localeCompare(String(b.运营), "zh-CN")
+      || String(a.运营批次号).localeCompare(String(b.运营批次号), "zh-CN"));
+  const operationColumns = [
+    { field: "月份", label: "月份", render: (v) => String(v) === "202605" ? "2026-05" : String(v) === "202606" ? "2026-06" : escapeHtml(v) },
+    { field: "运营", label: "运营" },
+    { field: "运营组长", label: "运营组长" },
+    { field: "运营批次号", label: "运营批次号" },
+    { field: "品类名称", label: "品类名称", long: true },
+    { field: "活动数量", label: "活动数量", numeric: true, render: (v) => formatNumber(v, 0) },
+    { field: "广告花费", label: "广告花费", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
+    { field: "广告销售额", label: "广告销售额", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
+    { field: "广告订单", label: "广告订单", numeric: true, render: (v) => formatNumber(v, 0) },
+    { field: "平均CPC", label: "平均 CPC", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
+    { field: "平均CVR", label: "平均 CVR", numeric: true, render: (v) => v === null ? "-" : `${formatNumber(v, 2)}%` },
+    { field: "ACOS", label: "ACoS", numeric: true, render: (v) => v === null ? "-" : formatPercent(v, true) },
+  ];
 
   let summaryRows = categoryRows;
   let summaryColumns = [
@@ -1458,13 +1498,23 @@ function renderBatch() {
       </div>
       ${tableMarkup("batch-summary-table", summaryRows, summaryColumns, 50)}
       <div class="method-note">月份、品类、团队与品类负责人均会联动更新顶部 KPI、投放规模、覆盖率、ACoS 对比和汇总明细。</div>
+    </section>
+    <section class="dashboard-section" id="batch-operation-detail">
+      ${sectionHead("批量投放批次查询", "批量投放批次查询表只提供批次整体数据，运营可以筛选自己名下的批次号，使用批次号到领星平台筛选活动，查看单条活动详情", `${operationRows.length} 条`)}
+      ${filterMarkup("batch_operation_detail", operationConfigs, null, `${operationRows.length} 条批次`)}
+      ${tableMarkup("batch-operation-table", operationRows, operationColumns, 50)}
+      <div class="method-note">本查询表的运营、运营组长、月份和品类筛选独立生效，不受页面上方数据筛选影响。</div>
     </section>`;
 }
 
 function renderSubnav() {
   const config = PAGE_CONFIG[state.page];
-  subnav.innerHTML = config.sections.map(([id, label], index) => `
+  const sectionLinks = config.sections.map(([id, label], index) => `
     <a class="subnav-link ${index === 0 ? "is-active" : ""}" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`).join("");
+  const batchApplicationLink = state.page === "batch_launch"
+    ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/notable/share/form/v01v9kqDejxQXkZ3OVx_tblZw1SF2hzdPvpj_vew40qPDRC?source=link" target="_blank" rel="noopener noreferrer">批量投放申请表</a>`
+    : "";
+  subnav.innerHTML = sectionLinks + batchApplicationLink;
 }
 
 function renderCurrentPage() {
@@ -1494,6 +1544,7 @@ function updateMultiSelectButton(select) {
   if (pageId === "invalid_low_efficiency") configs = invalidFilterConfig(state.data.invalid_low_efficiency);
   if (pageId === "lingxing_rules") configs = lingxingFilterConfig(state.data.lingxing_rules);
   if (pageId === "batch_launch") configs = batchFilterConfig(state.data.batch_launch);
+  if (pageId === "batch_operation_detail") configs = batchOperationFilterConfig(state.data.batch_launch);
   const config = configs.find((item) => item.id === filterId);
   select.querySelector(".multi-select__button").textContent = selectedLabel(pageId, config);
 }
@@ -1546,6 +1597,7 @@ function resetFilters(pageId) {
   if (pageId === "invalid_low_efficiency") configs = invalidFilterConfig(state.data.invalid_low_efficiency);
   if (pageId === "lingxing_rules") configs = lingxingFilterConfig(state.data.lingxing_rules);
   if (pageId === "batch_launch") configs = batchFilterConfig(state.data.batch_launch);
+  if (pageId === "batch_operation_detail") configs = batchOperationFilterConfig(state.data.batch_launch);
   configs.forEach((config) => {
     const all = new Set(unique(config.options));
     state.filterDraft[pageId][config.id] = cloneSet(all);
