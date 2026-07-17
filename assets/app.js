@@ -1060,8 +1060,22 @@ function renderInvalid() {
       </div>
     </section>
     <section class="dashboard-section" id="invalid-detail">
-      ${sectionHead("广告活动明细", "无效与低效结果分页展示，便于定位广告活动。", `${detailRows.length} 条`)}
-      ${detailSearchMarkup("invalid_low_efficiency", { label: "广告活动关键词", placeholder: "搜索广告活动、广告组合或标签" })}
+      <div class="invalid-detail-toolbar">
+        <div class="invalid-detail-toolbar__main">
+          ${sectionHead("广告活动明细", "无效与低效结果分页展示，便于定位广告活动。", `${detailRows.length} 条`)}
+          ${detailSearchMarkup("invalid_low_efficiency", { label: "广告活动关键词", placeholder: "搜索广告活动、广告组合或标签" })}
+        </div>
+        <aside class="external-data-notice external-data-notice--detail" aria-label="无效低效数据协作说明">
+          <div class="external-data-notice__copy">
+            <strong>注：无效/低效广告数据查询</strong>
+            <p>不想关停广告活动，可在下面的详细表中进行标注。</p>
+          </div>
+          <div class="external-data-notice__action">
+            <span>数据表</span>
+            <a class="external-data-link" href="https://alidocs.dingtalk.com/i/nodes/KGZLxjv9VG3jl597c6rwE0DRV6EDybno?utm_scene=person_space" target="_blank" rel="noopener noreferrer">6月无效低效广告活动费比分析</a>
+          </div>
+        </aside>
+      </div>
       <div class="chart-title-row">
         <div></div>
         ${segmentControl("invalid-detail", [["all", "全部"], ["invalid", "无效"], ["inefficient", "低效"]], state.ui.invalidDetailTab)}
