@@ -1106,16 +1106,6 @@ function renderInvalid() {
           ${sectionHead("广告活动明细", "无效与低效结果分页展示，便于定位广告活动。", `${detailRows.length} 条`)}
           ${detailSearchMarkup("invalid_low_efficiency", { label: "广告活动关键词", placeholder: "搜索广告活动、广告组合或标签" })}
         </div>
-        <aside class="external-data-notice external-data-notice--detail" aria-label="无效低效数据协作说明">
-          <div class="external-data-notice__copy">
-            <strong>注：无效/低效广告数据查询</strong>
-            <p>不想关停广告活动，可在下面的详细表中进行标注。</p>
-          </div>
-          <div class="external-data-notice__action">
-            <span>数据表</span>
-            <a class="external-data-link" href="https://alidocs.dingtalk.com/i/nodes/KGZLxjv9VG3jl597c6rwE0DRV6EDybno?utm_scene=person_space" target="_blank" rel="noopener noreferrer">6月无效低效广告活动费比分析</a>
-          </div>
-        </aside>
       </div>
       <div class="chart-title-row">
         <div></div>
@@ -1338,22 +1328,15 @@ function renderLingxing() {
 
 function batchFilterConfig(data) {
   const ownerCategoryMap = categoryOwnerMap(data.summary_cross || [], "品类", "品类负责人");
+  const categoryOptions = unique([
+    ...(data.filters.品类 || []),
+    ...(data.operation_filters?.品类 || []),
+  ]);
   return [
     { id: "month", label: "月份", options: (data.filters.月份 || []).map(String) },
     { id: "owner", label: "运营组长", options: data.filters.品类负责人 || [] },
-    { id: "category", label: "品类", options: data.filters.品类 || [], linkedTo: "owner", ownerCategoryMap },
+    { id: "category", label: "品类", options: categoryOptions, linkedTo: "owner", ownerCategoryMap },
     { id: "team", label: "团队", options: data.filters.团队 || [] },
-  ];
-}
-
-function batchOperationFilterConfig(data) {
-  const filters = data.operation_filters || {};
-  const ownerCategoryMap = categoryOwnerMap(data.operation_batch_rows || [], "品类名称", "运营组长", "、");
-  return [
-    { id: "operationOwner", label: "运营组长（多选）", options: filters.运营组长 || [] },
-    { id: "operationCategory", label: "品类（多选）", options: filters.品类 || [], linkedTo: "operationOwner", ownerCategoryMap },
-    { id: "operator", label: "运营（多选）", options: filters.运营 || data.filters?.运营 || [] },
-    { id: "operationMonth", label: "月份（多选）", options: (filters.月份 || []).map(String) },
   ];
 }
 
@@ -1405,18 +1388,12 @@ function batchRowsByDimension(rows, dimensionField, options = {}) {
 function renderBatch() {
   const data = state.data.batch_launch;
   const configs = batchFilterConfig(data);
-  const operationConfigs = batchOperationFilterConfig(data);
   initializeFilters("batch_launch", configs);
-  initializeFilters("batch_operation_detail", operationConfigs);
   const monthSet = selectedSet("batch_launch", "month");
   const categorySet = selectedSet("batch_launch", "category");
   const teamSet = selectedSet("batch_launch", "team");
   const ownerSet = selectedSet("batch_launch", "owner");
   const query = (state.searchApplied.batch_launch || "").trim().toLowerCase();
-  const operatorSet = selectedSet("batch_operation_detail", "operator");
-  const operationOwnerSet = selectedSet("batch_operation_detail", "operationOwner");
-  const operationMonthSet = selectedSet("batch_operation_detail", "operationMonth");
-  const operationCategorySet = selectedSet("batch_operation_detail", "operationCategory");
   const selectedMonths = [...monthSet].sort((a, b) => Number(a) - Number(b));
   const periodLabel = selectedMonths.join("+");
   const categoryAllSelected = isAllSelected("batch_launch", configs.find((config) => config.id === "category"));
@@ -1455,11 +1432,9 @@ function renderBatch() {
     return { label: month === "202605" ? "5月" : month === "202606" ? "6月" : month, value: aggregate.batchCount };
   });
 
+  const operationScopeKeys = new Set(crossRows.map((row) => `${row.月份}::${row.品类负责人}::${row.品类}`));
   const operationRows = (data.operation_batch_rows || [])
-    .filter((row) => operatorSet.has(row.运营)
-      && operationOwnerSet.has(row.运营组长)
-      && operationMonthSet.has(String(row.月份))
-      && String(row.品类名称 || "").split("、").some((category) => operationCategorySet.has(category)))
+    .filter((row) => String(row.品类名称 || "").split("、").some((category) => operationScopeKeys.has(`${row.月份}::${row.运营组长}::${category}`)))
     .sort((a, b) => String(b.月份).localeCompare(String(a.月份))
       || String(a.运营).localeCompare(String(b.运营), "zh-CN")
       || String(a.运营批次号).localeCompare(String(b.运营批次号), "zh-CN"));
@@ -1544,9 +1519,8 @@ function renderBatch() {
     </section>
     <section class="dashboard-section" id="batch-operation-detail">
       ${sectionHead("批量投放批次查询", "批量投放批次查询表只提供批次整体数据，运营可以筛选自己名下的批次号，使用批次号到领星平台筛选活动，查看单条活动详情", `${operationRows.length} 条`)}
-      ${filterMarkup("batch_operation_detail", operationConfigs, null, `${operationRows.length} 条批次`)}
       ${tableMarkup("batch-operation-table", operationRows, operationColumns, 50)}
-      <div class="method-note">本查询表的运营、运营组长、月份和品类筛选独立生效，不受页面上方数据筛选影响。</div>
+      <div class="method-note">本查询表直接沿用页面上方的月份、运营组长、品类、团队和品类关键词筛选。</div>
     </section>`;
 }
 
@@ -1578,7 +1552,6 @@ function pageFilterConfigs(pageId) {
   if (pageId === "invalid_low_efficiency") return invalidFilterConfig(state.data.invalid_low_efficiency);
   if (pageId === "lingxing_rules") return lingxingFilterConfig(state.data.lingxing_rules);
   if (pageId === "batch_launch") return batchFilterConfig(state.data.batch_launch);
-  if (pageId === "batch_operation_detail") return batchOperationFilterConfig(state.data.batch_launch);
   return [];
 }
 
