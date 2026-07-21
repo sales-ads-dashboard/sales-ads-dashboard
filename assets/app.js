@@ -12,7 +12,7 @@ const PAGE_CONFIG = {
     ],
   },
   invalid_low_efficiency: {
-    title: "无效低效看板",
+    title: "无效低效广告看板",
     sections: [
       ["invalid-analysis", "无效广告分析"],
       ["inefficient-analysis", "低效广告分析"],
@@ -1389,19 +1389,19 @@ function renderBatch() {
   const data = state.data.batch_launch;
   const configs = batchFilterConfig(data);
   initializeFilters("batch_launch", configs);
+  initializeFilters("batch_operation_detail", []);
   const monthSet = selectedSet("batch_launch", "month");
   const categorySet = selectedSet("batch_launch", "category");
   const teamSet = selectedSet("batch_launch", "team");
   const ownerSet = selectedSet("batch_launch", "owner");
-  const query = (state.searchApplied.batch_launch || "").trim().toLowerCase();
+  const operationQuery = (state.searchApplied.batch_operation_detail || "").trim();
   const selectedMonths = [...monthSet].sort((a, b) => Number(a) - Number(b));
   const periodLabel = selectedMonths.join("+");
   const categoryAllSelected = isAllSelected("batch_launch", configs.find((config) => config.id === "category"));
   const crossRows = (data.summary_cross || []).filter((row) => monthSet.has(String(row.月份))
     && (categoryAllSelected || categorySet.has(row.品类))
     && teamSet.has(row.团队)
-    && ownerSet.has(row.品类负责人)
-    && (!query || String(row.品类).toLowerCase().includes(query)));
+    && ownerSet.has(row.品类负责人));
   const monthlyCategoryRows = batchRowsByDimension(crossRows, "品类");
   const eligibleCategoryMonths = new Set(monthlyCategoryRows
     .filter((row) => row.批量广告花费 > 0)
@@ -1434,7 +1434,8 @@ function renderBatch() {
 
   const operationScopeKeys = new Set(crossRows.map((row) => `${row.月份}::${row.品类负责人}::${row.品类}`));
   const operationRows = (data.operation_batch_rows || [])
-    .filter((row) => String(row.品类名称 || "").split("、").some((category) => operationScopeKeys.has(`${row.月份}::${row.运营组长}::${category}`)))
+    .filter((row) => String(row.品类名称 || "").split("、").some((category) => operationScopeKeys.has(`${row.月份}::${row.运营组长}::${category}`))
+      && fuzzyOptionMatch(row.运营, operationQuery))
     .sort((a, b) => String(b.月份).localeCompare(String(a.月份))
       || String(a.运营).localeCompare(String(b.运营), "zh-CN")
       || String(a.运营批次号).localeCompare(String(b.运营批次号), "zh-CN"));
@@ -1479,13 +1480,13 @@ function renderBatch() {
   root.innerHTML = `
     ${introMarkup("批量投放系统运营看板", "查看批量活动创建规模、活动覆盖率及批量 ACoS 与品类平均的差异。")}
     <div class="kpi-grid">
-      ${kpiCard({ label: "批量投放规模", description: "广告活动数量", value: current.batchCount, previous: previous?.batchCount, valueType: "integer", tone: "primary", note: latestMonth ? `${String(latestMonth).slice(0, 4)}年${String(latestMonth).slice(4)}月` : "当前筛选" })}
+      ${kpiCard({ label: "批量广告活动数量", value: current.batchCount, previous: previous?.batchCount, valueType: "integer", tone: "primary", note: latestMonth ? `${String(latestMonth).slice(0, 4)}年${String(latestMonth).slice(4)}月` : "当前筛选" })}
       ${kpiCard({ label: "活动覆盖率", value: current.coverage, previous: previous?.coverage, valueType: "fractionPercent", tone: "teal", note: "批量活动数 / 全部活动数" })}
       ${kpiCard({ label: "批量广告花费", value: current.spend, previous: previous?.spend, valueType: "currency", tone: "orange", inverse: true })}
       ${kpiCard({ label: "批量 ACoS", value: current.acos, previous: previous?.acos, valueType: "fractionPercent", tone: "red", inverse: true })}
       ${kpiCard({ label: "当前覆盖品类", value: currentRows.length, valueType: "integer", tone: "green", note: "当前月份且批量花费大于 0" })}
     </div>
-    ${filterMarkup("batch_launch", configs, { label: "品类关键词", placeholder: "搜索品类" }, `${categoryRows.length} 个有批量花费的品类`)}
+    ${filterMarkup("batch_launch", configs, null, `${categoryRows.length} 个有批量花费的品类`)}
     <section class="dashboard-section" id="batch-scale">
       ${sectionHead("批量投放规模", "按月比较批量活动数量，不展示花费趋势。", "5月 vs 6月")}
       <div class="chart-panel chart-panel--full">
@@ -1519,8 +1520,9 @@ function renderBatch() {
     </section>
     <section class="dashboard-section" id="batch-operation-detail">
       ${sectionHead("批量投放批次查询", "批量投放批次查询表只提供批次整体数据，运营可以筛选自己名下的批次号，使用批次号到领星平台筛选活动，查看单条活动详情", `${operationRows.length} 条`)}
+      ${detailSearchMarkup("batch_operation_detail", { label: "运营姓名", placeholder: "输入运营姓名，支持模糊搜索" })}
       ${tableMarkup("batch-operation-table", operationRows, operationColumns, 50)}
-      <div class="method-note">本查询表直接沿用页面上方的月份、运营组长、品类、团队和品类关键词筛选。</div>
+      <div class="method-note">本查询表沿用页面上方的月份、运营组长、品类和团队筛选；运营姓名搜索仅作用于本表。</div>
     </section>`;
 }
 
