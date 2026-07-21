@@ -231,14 +231,27 @@ function selectedSet(pageId, id, draft = false) {
   return source[pageId]?.[id] || new Set();
 }
 
+function filterOptions(pageId, config, draft = false) {
+  const options = unique(config.options);
+  if (!config.linkedTo || !config.ownerCategoryMap) return options;
+  const selectedOwners = selectedSet(pageId, config.linkedTo, draft);
+  if (selectedOwners.size === 0) return [];
+  return options.filter((category) => {
+    const categoryOwners = config.ownerCategoryMap.get(category) || new Set();
+    return [...categoryOwners].some((owner) => selectedOwners.has(owner));
+  });
+}
+
 function isAllSelected(pageId, config, draft = false) {
-  return selectedSet(pageId, config.id, draft).size === unique(config.options).length;
+  const options = filterOptions(pageId, config, draft);
+  const selected = selectedSet(pageId, config.id, draft);
+  return selected.size === options.length && options.every((option) => selected.has(option));
 }
 
 function selectedLabel(pageId, config) {
   const set = selectedSet(pageId, config.id, true);
-  const total = unique(config.options).length;
-  if (set.size === total) return "全部";
+  const options = filterOptions(pageId, config, true);
+  if (set.size === options.length && options.every((option) => set.has(option))) return "全部";
   if (set.size === 0) return "已清除";
   if (set.size === 1) return [...set][0];
   return `已选 ${set.size} 项`;
@@ -276,10 +289,27 @@ function multiSelectSearchMarkup(options) {
     </div>`;
 }
 
+function multiSelectMenuMarkup(options, selected) {
+  return `
+    ${multiSelectSearchMarkup(options)}
+    <div class="multi-select__tools">
+      <button type="button" class="link-button" data-select-action="all">全选</button>
+      <button type="button" class="link-button" data-select-action="clear">清除</button>
+    </div>
+    <div class="multi-select__options">
+      ${options.map((option) => `
+        <label class="check-option">
+          <input type="checkbox" value="${escapeHtml(option)}" ${selected.has(option) ? "checked" : ""} />
+          <span>${escapeHtml(option)}</span>
+        </label>`).join("")}
+    </div>
+    <div class="multi-select__empty is-hidden">未找到匹配选项</div>`;
+}
+
 function filterMarkup(pageId, configs, searchConfig = null, note = "") {
   initializeFilters(pageId, configs);
   const fields = configs.map((config) => {
-    const options = unique(config.options);
+    const options = filterOptions(pageId, config, true);
     const selected = selectedSet(pageId, config.id, true);
     return `
       <div class="filter-field">
@@ -289,19 +319,7 @@ function filterMarkup(pageId, configs, searchConfig = null, note = "") {
             ${escapeHtml(selectedLabel(pageId, config))}
           </button>
           <div class="multi-select__menu is-hidden">
-            ${multiSelectSearchMarkup(options)}
-            <div class="multi-select__tools">
-              <button type="button" class="link-button" data-select-action="all">全选</button>
-              <button type="button" class="link-button" data-select-action="clear">清除</button>
-            </div>
-            <div class="multi-select__options">
-              ${options.map((option) => `
-                <label class="check-option">
-                  <input type="checkbox" value="${escapeHtml(option)}" ${selected.has(option) ? "checked" : ""} />
-                  <span>${escapeHtml(option)}</span>
-                </label>`).join("")}
-            </div>
-            <div class="multi-select__empty is-hidden">未找到匹配选项</div>
+            ${multiSelectMenuMarkup(options, selected)}
           </div>
         </div>
       </div>`;
@@ -694,10 +712,27 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => toast.classList.remove("is-visible"), 1800);
 }
 
+function categoryOwnerMap(rows, categoryField, ownerField, splitter = null) {
+  const mapping = new Map();
+  rows.forEach((row) => {
+    const owner = row[ownerField];
+    const categories = splitter
+      ? String(row[categoryField] || "").split(splitter).map((value) => value.trim()).filter(Boolean)
+      : [row[categoryField]];
+    categories.forEach((category) => {
+      if (!category || !owner) return;
+      if (!mapping.has(category)) mapping.set(category, new Set());
+      mapping.get(category).add(owner);
+    });
+  });
+  return mapping;
+}
+
 function monthlyFilterConfig(data) {
+  const ownerCategoryMap = categoryOwnerMap(data.category_overview || [], "品类", "运营组长");
   return [
-    { id: "category", label: "业务品类", options: data.filters?.品类 || data.category_overview.map((row) => row.品类) },
     { id: "owner", label: "运营组长", options: data.filters?.运营组长 || data.category_overview.map((row) => row.运营组长) },
+    { id: "category", label: "业务品类", options: data.filters?.品类 || data.category_overview.map((row) => row.品类), linkedTo: "owner", ownerCategoryMap },
   ];
 }
 
@@ -940,9 +975,14 @@ function renderMonthly() {
 }
 
 function invalidFilterConfig(data) {
+  const ownerCategoryMap = categoryOwnerMap([
+    ...(data.invalid_details || []),
+    ...(data.inefficient_details || []),
+    ...(data.savings_by_category || []),
+  ], "父标签", "运营组长");
   return [
-    { id: "category", label: "品类", options: data.filters.品类 || [] },
     { id: "owner", label: "运营组长", options: data.filters.运营组长 || [] },
+    { id: "category", label: "品类", options: data.filters.品类 || [], linkedTo: "owner", ownerCategoryMap },
     { id: "adType", label: "广告类型", options: data.filters.广告类型 || [] },
     { id: "service", label: "服务状态", options: data.filters.服务状态 || [] },
   ];
@@ -1087,10 +1127,11 @@ function renderInvalid() {
 
 function lingxingFilterConfig(data) {
   const filters = data.summary.filters;
+  const ownerCategoryMap = categoryOwnerMap(data.summary.trigger_monitor.detail || [], "品类", "运营组长");
   return [
     { id: "month", label: "月份", options: filters.月份 || ["5月", "6月"] },
-    { id: "category", label: "品类", options: filters.品类 || [] },
     { id: "owner", label: "运营组长", options: filters.运营组长 || [] },
+    { id: "category", label: "品类", options: filters.品类 || [], linkedTo: "owner", ownerCategoryMap },
     { id: "rule", label: "规则类别", options: filters.规则类别 || [] },
     { id: "ruleGroup", label: "规则大类", options: filters.规则大类 || [] },
   ];
@@ -1296,21 +1337,23 @@ function renderLingxing() {
 }
 
 function batchFilterConfig(data) {
+  const ownerCategoryMap = categoryOwnerMap(data.summary_cross || [], "品类", "品类负责人");
   return [
     { id: "month", label: "月份", options: (data.filters.月份 || []).map(String) },
-    { id: "category", label: "品类", options: data.filters.品类 || [] },
+    { id: "owner", label: "运营组长", options: data.filters.品类负责人 || [] },
+    { id: "category", label: "品类", options: data.filters.品类 || [], linkedTo: "owner", ownerCategoryMap },
     { id: "team", label: "团队", options: data.filters.团队 || [] },
-    { id: "owner", label: "品类负责人", options: data.filters.品类负责人 || [] },
   ];
 }
 
 function batchOperationFilterConfig(data) {
   const filters = data.operation_filters || {};
+  const ownerCategoryMap = categoryOwnerMap(data.operation_batch_rows || [], "品类名称", "运营组长", "、");
   return [
-    { id: "operator", label: "运营（多选）", options: filters.运营 || data.filters?.运营 || [] },
     { id: "operationOwner", label: "运营组长（多选）", options: filters.运营组长 || [] },
+    { id: "operationCategory", label: "品类（多选）", options: filters.品类 || [], linkedTo: "operationOwner", ownerCategoryMap },
+    { id: "operator", label: "运营（多选）", options: filters.运营 || data.filters?.运营 || [] },
     { id: "operationMonth", label: "月份（多选）", options: (filters.月份 || []).map(String) },
-    { id: "operationCategory", label: "品类（多选）", options: filters.品类 || [] },
   ];
 }
 
@@ -1454,7 +1497,7 @@ function renderBatch() {
   }
   if (state.ui.batchSummaryTab === "owner") {
     summaryRows = ownerRows;
-    summaryColumns = summaryColumns.map((column) => column.field === "维度" ? { ...column, label: "品类负责人" } : column);
+    summaryColumns = summaryColumns.map((column) => column.field === "维度" ? { ...column, label: "运营组长" } : column);
   }
   summaryRows = [...summaryRows].sort((a, b) => b.批量活动数量 - a.批量活动数量);
 
@@ -1494,10 +1537,10 @@ function renderBatch() {
       ${sectionHead("批量投放汇总明细", "按所选月份合并汇总；无批量花费的品类不展示。", `${summaryRows.length} 条`)}
       <div class="chart-title-row">
         <div></div>
-        ${segmentControl("batch-summary", [["category", "按品类"], ["team", "按团队"], ["owner", "按负责人"]], state.ui.batchSummaryTab)}
+        ${segmentControl("batch-summary", [["category", "按品类"], ["team", "按团队"], ["owner", "按运营组长"]], state.ui.batchSummaryTab)}
       </div>
       ${tableMarkup("batch-summary-table", summaryRows, summaryColumns, 50)}
-      <div class="method-note">月份、品类、团队与品类负责人均会联动更新顶部 KPI、投放规模、覆盖率、ACoS 对比和汇总明细。</div>
+      <div class="method-note">月份、运营组长、品类与团队均会联动更新顶部 KPI、投放规模、覆盖率、ACoS 对比和汇总明细。</div>
     </section>
     <section class="dashboard-section" id="batch-operation-detail">
       ${sectionHead("批量投放批次查询", "批量投放批次查询表只提供批次整体数据，运营可以筛选自己名下的批次号，使用批次号到领星平台筛选活动，查看单条活动详情", `${operationRows.length} 条`)}
@@ -1530,6 +1573,34 @@ function renderCurrentPage() {
   bindSectionObserver();
 }
 
+function pageFilterConfigs(pageId) {
+  if (pageId === "monthly_review") return monthlyFilterConfig(state.data.monthly_review);
+  if (pageId === "invalid_low_efficiency") return invalidFilterConfig(state.data.invalid_low_efficiency);
+  if (pageId === "lingxing_rules") return lingxingFilterConfig(state.data.lingxing_rules);
+  if (pageId === "batch_launch") return batchFilterConfig(state.data.batch_launch);
+  if (pageId === "batch_operation_detail") return batchOperationFilterConfig(state.data.batch_launch);
+  return [];
+}
+
+function syncLinkedCategoryFilter(pageId, ownerFilterId) {
+  const configs = pageFilterConfigs(pageId);
+  const categoryConfig = configs.find((config) => config.linkedTo === ownerFilterId);
+  if (!categoryConfig) return;
+  const options = filterOptions(pageId, categoryConfig, true);
+  const selected = new Set(options);
+  state.filterDraft[pageId][categoryConfig.id] = selected;
+
+  const panel = [...document.querySelectorAll("[data-page-filter]")]
+    .find((element) => element.dataset.pageFilter === pageId);
+  const select = panel
+    ? [...panel.querySelectorAll(".multi-select")].find((element) => element.dataset.filterId === categoryConfig.id)
+    : null;
+  if (!select) return;
+  select.querySelector(".multi-select__button").textContent = selectedLabel(pageId, categoryConfig);
+  const menu = select.querySelector(".multi-select__menu");
+  if (menu) menu.innerHTML = multiSelectMenuMarkup(options, selected);
+}
+
 function updateMultiSelectButton(select) {
   const detailPanel = select.closest("[data-detail-filter]");
   if (detailPanel) {
@@ -1539,12 +1610,7 @@ function updateMultiSelectButton(select) {
   }
   const pageId = select.closest("[data-page-filter]").dataset.pageFilter;
   const filterId = select.dataset.filterId;
-  let configs;
-  if (pageId === "monthly_review") configs = monthlyFilterConfig(state.data.monthly_review);
-  if (pageId === "invalid_low_efficiency") configs = invalidFilterConfig(state.data.invalid_low_efficiency);
-  if (pageId === "lingxing_rules") configs = lingxingFilterConfig(state.data.lingxing_rules);
-  if (pageId === "batch_launch") configs = batchFilterConfig(state.data.batch_launch);
-  if (pageId === "batch_operation_detail") configs = batchOperationFilterConfig(state.data.batch_launch);
+  const configs = pageFilterConfigs(pageId);
   const config = configs.find((item) => item.id === filterId);
   select.querySelector(".multi-select__button").textContent = selectedLabel(pageId, config);
 }
@@ -1592,12 +1658,7 @@ function applyFilters(pageId) {
 }
 
 function resetFilters(pageId) {
-  let configs;
-  if (pageId === "monthly_review") configs = monthlyFilterConfig(state.data.monthly_review);
-  if (pageId === "invalid_low_efficiency") configs = invalidFilterConfig(state.data.invalid_low_efficiency);
-  if (pageId === "lingxing_rules") configs = lingxingFilterConfig(state.data.lingxing_rules);
-  if (pageId === "batch_launch") configs = batchFilterConfig(state.data.batch_launch);
-  if (pageId === "batch_operation_detail") configs = batchOperationFilterConfig(state.data.batch_launch);
+  const configs = pageFilterConfigs(pageId);
   configs.forEach((config) => {
     const all = new Set(unique(config.options));
     state.filterDraft[pageId][config.id] = cloneSet(all);
@@ -1646,6 +1707,7 @@ function handleRootClick(event) {
       values = hasOptionSearch ? cloneSet(state.filterDraft[pageId][filterId]) : new Set();
       targetCheckboxes.forEach((box) => isAll ? values.add(box.value) : values.delete(box.value));
       state.filterDraft[pageId][select.dataset.filterId] = values;
+      syncLinkedCategoryFilter(pageId, filterId);
     }
     checkboxes.forEach((box) => { box.checked = values.has(box.value); });
     updateMultiSelectButton(select);
@@ -1744,6 +1806,7 @@ function handleRootChange(event) {
   if (checkbox.checked) selected.add(checkbox.value);
   else selected.delete(checkbox.value);
   updateMultiSelectButton(select);
+  syncLinkedCategoryFilter(pageId, filterId);
 }
 
 function handleRootInput(event) {
