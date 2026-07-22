@@ -9,6 +9,7 @@ const PAGE_CONFIG = {
       ["monthly-overview", "整体大盘"],
       ["monthly-category", "品类视角"],
       ["monthly-owner", "运营组长视角"],
+      ["monthly-sd-spend", "SD花费核对"],
     ],
   },
   invalid_low_efficiency: {
@@ -71,6 +72,12 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
   currency: "USD",
   maximumFractionDigits: 2,
 });
+const yuanFormatter = new Intl.NumberFormat("zh-CN", {
+  style: "currency",
+  currency: "CNY",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -120,6 +127,10 @@ function formatCurrency(value, compact = false) {
   return currencyFormatter.format(number);
 }
 
+function formatYuan(value) {
+  return yuanFormatter.format(asNumber(value));
+}
+
 function formatPercent(value, fraction = false, digits = 2) {
   const number = asNumber(value) * (fraction ? 100 : 1);
   return `${formatNumber(number, digits)}%`;
@@ -151,6 +162,7 @@ function kpiCard({ label, value, previous, valueType = "number", tone = "primary
   let display = formatNumber(value, 2);
   if (valueType === "integer") display = formatNumber(value, 0);
   if (valueType === "currency") display = formatCurrency(value, true);
+  if (valueType === "yuan") display = formatYuan(value);
   if (valueType === "percent") display = formatPercent(value, false, 2);
   if (valueType === "fractionPercent") display = formatPercent(value, true, 2);
   const compare = previous === undefined || previous === null
@@ -736,6 +748,19 @@ function monthlyFilterConfig(data) {
   ];
 }
 
+function sdSpendFilterConfig(data) {
+  const sdData = data.sd_spend || {};
+  return [
+    { id: "month", label: "月份", options: sdData.filters?.月份 || [] },
+    { id: "operator", label: "运营", options: sdData.filters?.运营 || [] },
+  ];
+}
+
+function formatMonth(value) {
+  const text = String(value || "");
+  return /^\d{6}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4)}` : text;
+}
+
 function monthlyDataModel(data, configs) {
   const currentRows = data.category_overview.filter((row) => rowMatches("monthly_review", row, {
     category: "品类",
@@ -924,6 +949,35 @@ function renderMonthly() {
     { field: "本月ACOS", label: "6月 ACoS", numeric: true, render: (v) => formatPercent(v) },
     { field: "花费环比", label: "花费环比", numeric: true, render: (v) => v === null ? "新增" : formatSignedFractionPercent(v) },
   ];
+  const sdData = data.sd_spend || { rows: [], filters: {} };
+  const sdConfigs = sdSpendFilterConfig(data);
+  initializeFilters("sd_spend", sdConfigs);
+  const sdRows = (sdData.rows || []).filter((row) => rowMatches("sd_spend", row, {
+    month: "时间月",
+    operator: "运营",
+  })).sort((a, b) => String(b.时间日).localeCompare(String(a.时间日)) || asNumber(b.金额) - asNumber(a.金额));
+  const sdOperatorSummary = aggregateBy(sdRows, "运营", {
+    金额: (row) => row.金额,
+  }).sort((a, b) => b.金额 - a.金额);
+  const sdKpis = [
+    kpiCard({ label: "SD总花费", value: sum(sdRows, "金额"), valueType: "yuan", tone: "primary", note: "当前筛选范围" }),
+    kpiCard({ label: "覆盖 SKU", value: unique(sdRows.map((row) => row.平台SKU)).length, valueType: "integer", tone: "teal", note: "平台SKU去重" }),
+    kpiCard({ label: "运营人数", value: unique(sdRows.map((row) => row.运营)).length, valueType: "integer", tone: "orange", note: "当前筛选范围" }),
+    kpiCard({ label: "覆盖品类", value: unique(sdRows.map((row) => row.品类)).length, valueType: "integer", tone: "red", note: "品类去重" }),
+    kpiCard({ label: "覆盖天数", value: unique(sdRows.map((row) => row.时间日)).length, valueType: "integer", tone: "green", note: "有SD花费记录的日期" }),
+  ].join("");
+  const sdColumns = [
+    { field: "时间月", label: "月份", render: (v) => escapeHtml(formatMonth(v)) },
+    { field: "时间日", label: "日期" },
+    { field: "店铺", label: "店铺" },
+    { field: "平台SKU", label: "平台 SKU", long: true },
+    { field: "渠道", label: "渠道" },
+    { field: "金额", label: "SD花费", numeric: true, render: (v) => formatYuan(v) },
+    { field: "币种", label: "币种" },
+    { field: "运营", label: "运营" },
+    { field: "运营组长", label: "运营组长" },
+    { field: "品类", label: "品类", long: true },
+  ];
 
   root.innerHTML = `
     ${introMarkup("月度广告数据复盘", "整体规模、效率变化及品类与运营组长表现，用于月度经营复盘。")}
@@ -971,6 +1025,18 @@ function renderMonthly() {
       </div>
       <div style="height:14px"></div>
       ${tableMarkup("monthly-owner-table", ownerRows, ownerColumns, 30)}
+    </section>
+    <section class="dashboard-section" id="monthly-sd-spend">
+      ${sectionHead("SD花费核对", "固定统计损益科目为“广告花费-SD”的流水，用于按月份和运营核对花费。", `${sdRows.length} 条`)}
+      ${filterMarkup("sd_spend", sdConfigs, null, `${sdRows.length} 条SD花费记录`)}
+      <div class="kpi-grid">${sdRows.length ? sdKpis : emptyState()}</div>
+      <div class="chart-panel chart-panel--full">
+        <div class="chart-title-row"><div><h4>运营SD花费排名</h4><p>按当前筛选范围汇总，金额单位为人民币</p></div></div>
+        ${horizontalBarChart(sdOperatorSummary.slice(0, 15).map((row) => ({ label: row.运营, value: row.金额 })), { formatter: (v) => formatYuan(v) })}
+      </div>
+      <div style="height:14px"></div>
+      ${tableMarkup("monthly-sd-spend-table", sdRows, sdColumns, 50)}
+      <div class="method-note">数据源：SD花费提取.xlsx；固定筛选“损益科目 = 广告花费-SD”。页面金额统一保留两位小数。</div>
     </section>`;
 }
 
@@ -1450,7 +1516,7 @@ function renderBatch() {
     { field: "广告销售额", label: "广告销售额", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
     { field: "广告订单", label: "广告订单", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "平均CPC", label: "平均 CPC", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
-    { field: "平均CVR", label: "平均 CVR", numeric: true, render: (v) => v === null ? "-" : `${formatNumber(v, 2)}%` },
+    { field: "平均CVR", label: "平均 CVR", numeric: true, render: (v) => v === null || v === "" || !Number.isFinite(Number(v)) ? "-" : `${formatNumber(v, 2)}%` },
     { field: "ACOS", label: "ACoS", numeric: true, render: (v) => v === null ? "-" : formatPercent(v, true) },
   ];
 
@@ -1549,8 +1615,17 @@ function renderCurrentPage() {
   bindSectionObserver();
 }
 
+function renderCurrentPageAtSection(sectionId) {
+  renderCurrentPage();
+  const section = document.getElementById(sectionId);
+  if (!section) return;
+  section.scrollIntoView({ block: "start" });
+  setActiveSubnav(sectionId);
+}
+
 function pageFilterConfigs(pageId) {
   if (pageId === "monthly_review") return monthlyFilterConfig(state.data.monthly_review);
+  if (pageId === "sd_spend") return sdSpendFilterConfig(state.data.monthly_review);
   if (pageId === "invalid_low_efficiency") return invalidFilterConfig(state.data.invalid_low_efficiency);
   if (pageId === "lingxing_rules") return lingxingFilterConfig(state.data.lingxing_rules);
   if (pageId === "batch_launch") return batchFilterConfig(state.data.batch_launch);
@@ -1620,6 +1695,7 @@ function filterMultiSelectOptions(input) {
 }
 
 function applyFilters(pageId) {
+  const sectionId = document.querySelector(`[data-page-filter="${CSS.escape(pageId)}"]`)?.closest(".dashboard-section")?.id;
   Object.entries(state.filterDraft[pageId]).forEach(([id, values]) => {
     state.filterApplied[pageId][id] = cloneSet(values);
   });
@@ -1628,11 +1704,13 @@ function applyFilters(pageId) {
   state.searchApplied[pageId] = state.searchDraft[pageId] || "";
   Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
   closeMultiSelects();
-  renderCurrentPage();
+  if (sectionId) renderCurrentPageAtSection(sectionId);
+  else renderCurrentPage();
   showToast("筛选已应用");
 }
 
 function resetFilters(pageId) {
+  const sectionId = document.querySelector(`[data-page-filter="${CSS.escape(pageId)}"]`)?.closest(".dashboard-section")?.id;
   const configs = pageFilterConfigs(pageId);
   configs.forEach((config) => {
     const all = new Set(unique(config.options));
@@ -1642,7 +1720,8 @@ function resetFilters(pageId) {
   state.searchDraft[pageId] = "";
   state.searchApplied[pageId] = "";
   Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
-  renderCurrentPage();
+  if (sectionId) renderCurrentPageAtSection(sectionId);
+  else renderCurrentPage();
   showToast("筛选已重置");
 }
 
@@ -1692,6 +1771,7 @@ function handleRootClick(event) {
   const detailQueryButton = event.target.closest("[data-detail-query]");
   if (detailQueryButton) {
     const panel = detailQueryButton.closest("[data-detail-filter]");
+    const sectionId = panel.closest(".dashboard-section")?.id;
     const detailState = state.detailFilters[panel.dataset.detailFilter];
     detailState.ruleApplied = cloneSet(detailState.ruleDraft);
     const search = panel.querySelector(".search-input");
@@ -1699,7 +1779,8 @@ function handleRootClick(event) {
     detailState.searchApplied = detailState.searchDraft;
     Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
     closeMultiSelects();
-    renderCurrentPage();
+    if (sectionId) renderCurrentPageAtSection(sectionId);
+    else renderCurrentPage();
     showToast("明细筛选已应用");
     return;
   }
@@ -1707,11 +1788,13 @@ function handleRootClick(event) {
   const detailClearButton = event.target.closest("[data-detail-search-clear]");
   if (detailClearButton) {
     const panel = detailClearButton.closest("[data-detail-filter]");
+    const sectionId = panel.closest(".dashboard-section")?.id;
     const detailState = state.detailFilters[panel.dataset.detailFilter];
     detailState.searchDraft = "";
     detailState.searchApplied = "";
     Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
-    renderCurrentPage();
+    if (sectionId) renderCurrentPageAtSection(sectionId);
+    else renderCurrentPage();
     showToast("明细关键词已清除");
     return;
   }
