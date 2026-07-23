@@ -25,6 +25,7 @@ const PAGE_CONFIG = {
     title: "领星规则看板",
     sections: [
       ["trigger-monitor", "规则触发监控"],
+      ["rule-query", "领星自动化规则"],
       ["saving-dashboard", "节费规则看板"],
       ["saving-detail", "节费规则触发明细"],
     ],
@@ -201,14 +202,18 @@ function introMarkup(title, description, period = "2026年5月 vs 6月", note = 
     </div>`;
 }
 
-function sectionHead(title, description = "", meta = "") {
+function sectionHead(title, description = "", meta = "", action = null) {
   return `
     <div class="section-head">
       <div>
         <h3>${escapeHtml(title)}</h3>
         ${description ? `<p>${escapeHtml(description)}</p>` : ""}
       </div>
-      ${meta ? `<span class="section-meta">${escapeHtml(meta)}</span>` : ""}
+      ${(meta || action) ? `
+        <div class="section-head__actions">
+          ${action ? `<a class="section-action" href="${escapeHtml(action.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(action.label)}</a>` : ""}
+          ${meta ? `<span class="section-meta">${escapeHtml(meta)}</span>` : ""}
+        </div>` : ""}
     </div>`;
 }
 
@@ -1063,6 +1068,74 @@ function filterInvalidDetail(rows) {
   }) && searchMatches("invalid_low_efficiency", row, ["广告活动", "广告组合", "标签"]));
 }
 
+function selectedInvalidDetailRows(invalidRows, inefficientRows) {
+  const rows = [];
+  if (state.ui.invalidDetailTab !== "inefficient") rows.push(...invalidRows);
+  if (state.ui.invalidDetailTab !== "invalid") rows.push(...inefficientRows);
+  return rows.sort((a, b) => asNumber(b.花费) - asNumber(a.花费));
+}
+
+const INVALID_DETAIL_EXPORT_COLUMNS = [
+  { field: "复盘标签", label: "复盘标签" },
+  { field: "父标签", label: "品类" },
+  { field: "运营组长", label: "运营组长" },
+  { field: "类型", label: "广告类型" },
+  { field: "服务状态", label: "服务状态" },
+  { field: "广告活动", label: "广告活动" },
+  { field: "花费", label: "花费", digits: 2 },
+  { field: "曝光量", label: "曝光量", integer: true },
+  { field: "点击", label: "点击", integer: true },
+  { field: "广告订单", label: "广告订单", integer: true },
+  { field: "广告销售额", label: "广告销售额", digits: 2 },
+  { field: "ACoS", label: "ACoS" },
+];
+
+function csvCell(value) {
+  let text = value === null || value === undefined ? "" : String(value);
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function exportDetailValue(row, column) {
+  const value = row[column.field];
+  if (column.integer) return Math.round(asNumber(value));
+  if (column.digits !== undefined) return asNumber(value).toFixed(column.digits);
+  return value ?? "";
+}
+
+function downloadInvalidDetailCsv() {
+  const data = state.data?.invalid_low_efficiency;
+  if (!data) return;
+  const invalidRows = filterInvalidDetail(data.invalid_details || []);
+  const inefficientRows = filterInvalidDetail(data.inefficient_details || []);
+  const rows = selectedInvalidDetailRows(invalidRows, inefficientRows);
+  if (!rows.length) {
+    showToast("当前筛选条件下没有可下载的明细");
+    return;
+  }
+
+  const header = INVALID_DETAIL_EXPORT_COLUMNS.map((column) => csvCell(column.label)).join(",");
+  const body = rows.map((row) => INVALID_DETAIL_EXPORT_COLUMNS
+    .map((column) => csvCell(exportDetailValue(row, column)))
+    .join(","));
+  const blob = new Blob([`\ufeff${[header, ...body].join("\r\n")}`], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const scope = { all: "全部", invalid: "无效", inefficient: "低效" }[state.ui.invalidDetailTab] || "全部";
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `无效低效广告活动明细_${scope}_${stamp}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast(`已下载 ${formatNumber(rows.length, 0)} 条明细`);
+}
+
 function renderInvalid() {
   const data = state.data.invalid_low_efficiency;
   const configs = invalidFilterConfig(data);
@@ -1096,10 +1169,7 @@ function renderInvalid() {
     总广告订单: (row) => row.广告订单,
   }).map((row) => ({ ...row, 平均ACoS: safeDivide(row.总花费, row.总广告销售额) * 100 })).sort((a, b) => b.总花费 - a.总花费);
 
-  let detailRows = [];
-  if (state.ui.invalidDetailTab !== "inefficient") detailRows.push(...invalidRows);
-  if (state.ui.invalidDetailTab !== "invalid") detailRows.push(...inefficientRows);
-  detailRows = detailRows.sort((a, b) => asNumber(b.花费) - asNumber(a.花费));
+  const detailRows = selectedInvalidDetailRows(invalidRows, inefficientRows);
 
   const detailColumns = [
     { field: "复盘标签", label: "复盘标签", render: (v) => tagMarkup(v) },
@@ -1172,6 +1242,13 @@ function renderInvalid() {
           ${sectionHead("广告活动明细", "无效与低效结果分页展示，便于定位广告活动。", `${detailRows.length} 条`)}
           ${detailSearchMarkup("invalid_low_efficiency", { label: "广告活动关键词", placeholder: "搜索广告活动、广告组合或标签" })}
         </div>
+        <div class="invalid-detail-download">
+          <div>
+            <strong>下载筛选结果</strong>
+            <span>导出当前筛选命中的全部 ${formatNumber(detailRows.length, 0)} 条明细，不受分页限制。</span>
+          </div>
+          <button type="button" class="button button--download" data-invalid-detail-download ${detailRows.length ? "" : "disabled"}>下载表格</button>
+        </div>
       </div>
       <div class="chart-title-row">
         <div></div>
@@ -1202,10 +1279,35 @@ function filteredTriggerRows(data) {
   }));
 }
 
+function ruleQueryFilterConfig(data) {
+  const ruleQuery = data.rule_query || { rows: [], filters: {} };
+  const filters = ruleQuery.filters || {};
+  const ownerCategoryMap = categoryOwnerMap(ruleQuery.rows || [], "品类", "运营组长");
+  return [
+    { id: "owner", label: "运营组长", options: filters.运营组长 || [] },
+    { id: "category", label: "品类", options: filters.品类 || [], linkedTo: "owner", ownerCategoryMap },
+    { id: "adType", label: "广告类型", options: filters.广告类型 || [] },
+    { id: "ruleCategory", label: "规则类别", options: filters.规则类别 || [] },
+  ];
+}
+
+function filteredRuleQueryRows(data) {
+  return (data.rule_query?.rows || []).filter((row) => rowMatches("lingxing_rule_query", row, {
+    owner: "运营组长",
+    category: "品类",
+    adType: "广告类型",
+    ruleCategory: "规则类别",
+  })).sort((a, b) => String(a.品类).localeCompare(String(b.品类), "zh-CN")
+    || String(a.广告类型).localeCompare(String(b.广告类型), "zh-CN")
+    || String(a.规则类别).localeCompare(String(b.规则类别), "zh-CN"));
+}
+
 function renderLingxing() {
   const data = state.data.lingxing_rules;
   const configs = lingxingFilterConfig(data);
   initializeFilters("lingxing_rules", configs);
+  const ruleQueryConfigs = ruleQueryFilterConfig(data);
+  initializeFilters("lingxing_rule_query", ruleQueryConfigs);
   const detailFilter = initializeDetailFilter("lingxing_rules_detail", ["关键词/PAT暂停", "产品(ASIN)暂停", "否词"]);
   const triggerRows = filteredTriggerRows(data);
   const monthSet = selectedSet("lingxing_rules", "month");
@@ -1291,6 +1393,18 @@ function renderLingxing() {
     { field: "节费去重状态", label: "节费去重状态", render: (v) => tagMarkup(v) },
     { field: "节费来源口径", label: "节费来源口径", long: true },
   ];
+  const ruleQueryRows = filteredRuleQueryRows(data);
+  const ruleQueryColumns = [
+    { field: "品类", label: "品类" },
+    { field: "广告类型", label: "广告类型" },
+    { field: "运营组长", label: "运营组长" },
+    { field: "广告组负责人", label: "广告组负责人" },
+    { field: "规则", label: "规则", long: true },
+    { field: "规则类别", label: "规则类别" },
+    { field: "针对标签", label: "针对标签（默认全部）", long: true, render: (v) => v ? escapeHtml(v) : "默认全部" },
+    { field: "覆盖周期", label: "覆盖周期" },
+    { field: "通知邮箱", label: "通知邮箱", long: true },
+  ];
 
   const kpiRows = [
     { label: "规则触发总数", rows: triggerRows, tone: "primary" },
@@ -1348,8 +1462,22 @@ function renderLingxing() {
         </div>
       </div>
     </section>
+    <section class="dashboard-section" id="rule-query">
+      ${sectionHead(
+        "领星自动化规则",
+        "查询当前已配置的领星自动化规则及通知信息。",
+        `${ruleQueryRows.length} 条`,
+        {
+          label: "新增/修改规则需求收集表",
+          href: "https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys",
+        },
+      )}
+      ${filterMarkup("lingxing_rule_query", ruleQueryConfigs, null, `${ruleQueryRows.length} 条规则`)}
+      ${tableMarkup("lingxing-rule-query-table", ruleQueryRows, ruleQueryColumns, 50)}
+      <div class="method-note">数据源：${escapeHtml(data.rule_query?.source || "未找到规则表")}；规则配置与规则触发记录为独立数据源，表内空白字段以横杠显示。</div>
+    </section>
     <section class="dashboard-section" id="saving-dashboard">
-      ${sectionHead("节费规则看板", "主节费仅统计产品(ASIN)暂停和关键词/PAT暂停；否词只展示触发次数。", `${formatCurrency(mainSaving.current)} 本周期理论节费`)}
+      ${sectionHead("节费规则看板", "主节费仅统计产品(ASIN)暂停和关键词/PAT暂停；否词只展示触发次数，理论节费金额和广告活动/广告组暂停金额有部分重叠，仅供参考。", `${formatCurrency(mainSaving.current)} 本周期理论节费`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>节费 Top 品类</h4></div>${legendMarkup()}</div>
@@ -1599,7 +1727,10 @@ function renderSubnav() {
   const batchApplicationLink = state.page === "batch_launch"
     ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/notable/share/form/v01v9kqDejxQXkZ3OVx_tblZw1SF2hzdPvpj_vew40qPDRC?source=link" target="_blank" rel="noopener noreferrer">批量投放申请表</a>`
     : "";
-  subnav.innerHTML = sectionLinks + batchApplicationLink;
+  const lingxingRuleRequestLink = state.page === "lingxing_rules"
+    ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&amp;iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys" target="_blank" rel="noopener noreferrer">新增/修改规则需求收集表</a>`
+    : "";
+  subnav.innerHTML = sectionLinks + batchApplicationLink + lingxingRuleRequestLink;
 }
 
 function renderCurrentPage() {
@@ -1628,6 +1759,7 @@ function pageFilterConfigs(pageId) {
   if (pageId === "sd_spend") return sdSpendFilterConfig(state.data.monthly_review);
   if (pageId === "invalid_low_efficiency") return invalidFilterConfig(state.data.invalid_low_efficiency);
   if (pageId === "lingxing_rules") return lingxingFilterConfig(state.data.lingxing_rules);
+  if (pageId === "lingxing_rule_query") return ruleQueryFilterConfig(state.data.lingxing_rules);
   if (pageId === "batch_launch") return batchFilterConfig(state.data.batch_launch);
   return [];
 }
@@ -1819,6 +1951,12 @@ function handleRootClick(event) {
   const resetButton = event.target.closest("[data-filter-reset]");
   if (resetButton) {
     resetFilters(resetButton.closest("[data-page-filter]").dataset.pageFilter);
+    return;
+  }
+
+  const invalidDetailDownloadButton = event.target.closest("[data-invalid-detail-download]");
+  if (invalidDetailDownloadButton) {
+    downloadInvalidDetailCsv();
     return;
   }
 
