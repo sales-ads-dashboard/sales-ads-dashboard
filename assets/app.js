@@ -50,6 +50,16 @@ const state = {
   searchDraft: {},
   searchApplied: {},
   detailFilters: {},
+  invalidDetailSearch: {
+    draft: "",
+    applied: "",
+  },
+  invalidDetailDays: {
+    minDraft: "",
+    maxDraft: "",
+    minApplied: null,
+    maxApplied: null,
+  },
   pagination: {},
   ui: {
     monthlyCategoryTab: "all",
@@ -379,6 +389,34 @@ function detailSearchMarkup(pageId, { label, placeholder }) {
     </div>`;
 }
 
+function invalidDetailFilterMarkup() {
+  const pageId = "invalid_low_efficiency";
+  const range = state.invalidDetailDays;
+  return `
+    <div class="detail-search invalid-detail-combined-filter"
+      data-page-filter="${pageId}" data-invalid-detail-filter>
+      <div class="filter-field invalid-detail-keyword-field">
+        <label for="${pageId}-detail-search">广告活动关键词</label>
+        <input class="search-input" id="${pageId}-detail-search" data-invalid-detail-keyword type="search"
+          placeholder="搜索广告活动、广告组合或标签"
+          value="${escapeHtml(state.invalidDetailSearch.draft)}" />
+      </div>
+      <div class="filter-field">
+        <label for="invalid-days-min">投放天数大于</label>
+        <input class="search-input" id="invalid-days-min" data-invalid-days-min type="number"
+          min="0" step="1" placeholder="输入天数" value="${escapeHtml(range.minDraft)}" />
+      </div>
+      <div class="filter-field">
+        <label for="invalid-days-max">投放天数小于</label>
+        <input class="search-input" id="invalid-days-max" data-invalid-days-max type="number"
+          min="0" step="1" placeholder="输入天数" value="${escapeHtml(range.maxDraft)}" />
+      </div>
+      <button type="button" class="button button--primary" data-invalid-detail-query>查询</button>
+      <button type="button" class="button" data-invalid-detail-clear>清除</button>
+      <span class="invalid-detail-filter__note">关键词和投放天数仅应用于本明细及下载结果</span>
+    </div>`;
+}
+
 function initializeDetailFilter(filterId, options) {
   if (state.detailFilters[filterId]) return state.detailFilters[filterId];
   const values = [...new Set(options.filter((value) => value !== null && value !== undefined && value !== ""))];
@@ -687,7 +725,11 @@ function tableMarkup(id, rows, columns, pageSize = 50) {
     let content;
     if (column.render) content = column.render(row[column.field], row);
     else content = escapeHtml(row[column.field] ?? "-");
-    const classes = [column.numeric ? "cell-number" : "", column.long ? "cell-long" : ""].filter(Boolean).join(" ");
+    const classes = [
+      column.numeric ? "cell-number" : "",
+      column.long ? "cell-long" : "",
+      column.wrap ? "cell-wrap" : "",
+    ].filter(Boolean).join(" ");
     return `<td class="${classes}">${content}</td>`;
   }).join("")}</tr>`).join("");
   return `
@@ -1065,14 +1107,26 @@ function filterInvalidDetail(rows) {
     owner: "运营组长",
     adType: "类型",
     service: "服务状态",
-  }) && searchMatches("invalid_low_efficiency", row, ["广告活动", "广告组合", "标签"]));
+  }));
 }
 
 function selectedInvalidDetailRows(invalidRows, inefficientRows) {
   const rows = [];
   if (state.ui.invalidDetailTab !== "inefficient") rows.push(...invalidRows);
   if (state.ui.invalidDetailTab !== "invalid") rows.push(...inefficientRows);
-  return rows.sort((a, b) => asNumber(b.花费) - asNumber(a.花费));
+  const query = state.invalidDetailSearch.applied.trim().toLowerCase();
+  const { minApplied, maxApplied } = state.invalidDetailDays;
+  return rows.filter((row) => {
+    if (query && !["广告活动", "广告组合", "标签"].some(
+      (field) => String(row[field] ?? "").toLowerCase().includes(query),
+    )) return false;
+    if (minApplied === null && maxApplied === null) return true;
+    const days = Number(row.投放天数);
+    if (!Number.isFinite(days)) return false;
+    if (minApplied !== null && days <= minApplied) return false;
+    if (maxApplied !== null && days >= maxApplied) return false;
+    return true;
+  }).sort((a, b) => asNumber(b.花费) - asNumber(a.花费));
 }
 
 const INVALID_DETAIL_EXPORT_COLUMNS = [
@@ -1081,6 +1135,7 @@ const INVALID_DETAIL_EXPORT_COLUMNS = [
   { field: "运营组长", label: "运营组长" },
   { field: "类型", label: "广告类型" },
   { field: "服务状态", label: "服务状态" },
+  { field: "投放天数", label: "投放天数", integer: true },
   { field: "广告活动", label: "广告活动" },
   { field: "花费", label: "花费", digits: 2 },
   { field: "曝光量", label: "曝光量", integer: true },
@@ -1177,13 +1232,14 @@ function renderInvalid() {
     { field: "运营组长", label: "运营组长" },
     { field: "类型", label: "广告类型" },
     { field: "服务状态", label: "服务状态", render: (v) => tagMarkup(v) },
+    { field: "投放天数", label: "投放天数", numeric: true, render: (v) => `${formatNumber(v, 0)} 天` },
     { field: "广告活动", label: "广告活动", long: true },
     { field: "花费", label: "花费", numeric: true, render: (v) => formatCurrency(v) },
     { field: "曝光量", label: "曝光量", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "点击", label: "点击", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "广告订单", label: "广告订单", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "广告销售额", label: "广告销售额", numeric: true, render: (v) => formatCurrency(v) },
-    { field: "ACoS", label: "ACoS", numeric: true },
+    { field: "ACoS", label: "ACoS", numeric: true, wrap: true },
   ];
 
   root.innerHTML = `
@@ -1240,7 +1296,7 @@ function renderInvalid() {
       <div class="invalid-detail-toolbar">
         <div class="invalid-detail-toolbar__main">
           ${sectionHead("广告活动明细", "无效与低效结果分页展示，便于定位广告活动。", `${detailRows.length} 条`)}
-          ${detailSearchMarkup("invalid_low_efficiency", { label: "广告活动关键词", placeholder: "搜索广告活动、广告组合或标签" })}
+          ${invalidDetailFilterMarkup()}
         </div>
         <div class="invalid-detail-download">
           <div>
@@ -1954,6 +2010,50 @@ function handleRootClick(event) {
     return;
   }
 
+  const invalidDetailQueryButton = event.target.closest("[data-invalid-detail-query]");
+  if (invalidDetailQueryButton) {
+    const panel = invalidDetailQueryButton.closest("[data-invalid-detail-filter]");
+    const keyword = panel.querySelector("[data-invalid-detail-keyword]")?.value || "";
+    const minText = panel.querySelector("[data-invalid-days-min]")?.value.trim() || "";
+    const maxText = panel.querySelector("[data-invalid-days-max]")?.value.trim() || "";
+    const minValue = minText === "" ? null : Number(minText);
+    const maxValue = maxText === "" ? null : Number(maxText);
+    if ((minValue !== null && (!Number.isFinite(minValue) || minValue < 0))
+      || (maxValue !== null && (!Number.isFinite(maxValue) || maxValue < 0))) {
+      showToast("投放天数请输入大于或等于 0 的数字");
+      return;
+    }
+    if (minValue !== null && maxValue !== null && minValue >= maxValue) {
+      showToast("“大于”天数必须小于“小于”天数");
+      return;
+    }
+    state.invalidDetailSearch.draft = keyword;
+    state.invalidDetailSearch.applied = keyword;
+    state.invalidDetailDays.minDraft = minText;
+    state.invalidDetailDays.maxDraft = maxText;
+    state.invalidDetailDays.minApplied = minValue;
+    state.invalidDetailDays.maxApplied = maxValue;
+    Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
+    closeMultiSelects();
+    renderCurrentPageAtSection("invalid-detail");
+    showToast("明细筛选已应用");
+    return;
+  }
+
+  const invalidDetailClearButton = event.target.closest("[data-invalid-detail-clear]");
+  if (invalidDetailClearButton) {
+    state.invalidDetailSearch.draft = "";
+    state.invalidDetailSearch.applied = "";
+    state.invalidDetailDays.minDraft = "";
+    state.invalidDetailDays.maxDraft = "";
+    state.invalidDetailDays.minApplied = null;
+    state.invalidDetailDays.maxApplied = null;
+    state.pagination["invalid-detail-table"] = 1;
+    renderCurrentPageAtSection("invalid-detail");
+    showToast("明细筛选已清除");
+    return;
+  }
+
   const invalidDetailDownloadButton = event.target.closest("[data-invalid-detail-download]");
   if (invalidDetailDownloadButton) {
     downloadInvalidDetailCsv();
@@ -2006,6 +2106,18 @@ function handleRootChange(event) {
 }
 
 function handleRootInput(event) {
+  if (event.target.matches("[data-invalid-detail-keyword]")) {
+    state.invalidDetailSearch.draft = event.target.value;
+    return;
+  }
+  if (event.target.matches("[data-invalid-days-min]")) {
+    state.invalidDetailDays.minDraft = event.target.value;
+    return;
+  }
+  if (event.target.matches("[data-invalid-days-max]")) {
+    state.invalidDetailDays.maxDraft = event.target.value;
+    return;
+  }
   if (event.target.matches(".multi-select__search")) {
     filterMultiSelectOptions(event.target);
     return;
