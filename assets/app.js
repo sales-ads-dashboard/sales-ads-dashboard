@@ -1,6 +1,7 @@
 "use strict";
 
 const DATA_URL = window.DASHBOARD_DATA_URL || "data/sales_ads_dashboard_data.json";
+const WEEKLY_DATA_URL = window.WEEKLY_REPORT_DATA_URL || "亚马逊周报月报/output/latest.json";
 
 const PAGE_CONFIG = {
   monthly_review: {
@@ -10,6 +11,15 @@ const PAGE_CONFIG = {
       ["monthly-category", "品类视角"],
       ["monthly-owner", "运营组长视角"],
       ["monthly-sd-spend", "SD花费核对"],
+    ],
+  },
+  weekly_review: {
+    title: "周度广告复盘看板",
+    sections: [
+      ["weekly-overview", "总体概览"],
+      ["weekly-category", "重点品类"],
+      ["weekly-self-invest", "自投广告"],
+      ["weekly-detail", "数据明细"],
     ],
   },
   invalid_low_efficiency: {
@@ -25,9 +35,9 @@ const PAGE_CONFIG = {
     title: "领星规则看板",
     sections: [
       ["trigger-monitor", "规则触发监控"],
-      ["rule-query", "领星自动化规则"],
       ["saving-dashboard", "节费规则看板"],
       ["saving-detail", "节费规则触发明细"],
+      ["rule-query", "领星自动化规则"],
     ],
   },
   batch_launch: {
@@ -44,6 +54,8 @@ const PAGE_CONFIG = {
 
 const state = {
   data: null,
+  weeklyReport: null,
+  weeklyLoadError: "",
   page: "monthly_review",
   filterDraft: {},
   filterApplied: {},
@@ -63,6 +75,7 @@ const state = {
   pagination: {},
   ui: {
     monthlyCategoryTab: "all",
+    weeklySelfTab: "overall",
     invalidDetailTab: "all",
     batchSummaryTab: "category",
     batchAcosSort: "desc",
@@ -229,6 +242,309 @@ function sectionHead(title, description = "", meta = "", action = null) {
 
 function emptyState(message = "当前筛选条件下暂无数据") {
   return `<div class="empty-state"><div><strong>暂无结果</strong>${escapeHtml(message)}</div></div>`;
+}
+
+function weeklyValue(value, type = "number") {
+  if (value === null || value === undefined || value === "") return "数据不足";
+  if (type === "integer") return formatNumber(value, 0);
+  if (type === "currency") return formatCurrency(value);
+  if (type === "percent") return formatPercent(value, true);
+  return formatNumber(value, 2);
+}
+
+function weeklyMetricType(metric) {
+  if (metric?.unit === "count") return "integer";
+  if (metric?.unit === "USD") return "currency";
+  if (metric?.unit === "ratio") return "percent";
+  return "number";
+}
+
+function weeklyMetricRule(metricId) {
+  if (["front_units", "front_sales", "ad_sales", "cvr"].includes(metricId)) return "higher-good";
+  if (["acos", "cpc"].includes(metricId)) return "lower-good";
+  return "neutral";
+}
+
+function weeklyDelta(metric, rule = "neutral") {
+  if (!metric || metric.available === false || [metric.current, metric.previous].some((value) => value === null || value === undefined || value === "")) {
+    return `<span class="weekly-delta is-neutral">数据不足</span>`;
+  }
+  const delta = Number(metric.delta);
+  if (!Number.isFinite(delta)) return `<span class="weekly-delta is-neutral">数据不足</span>`;
+  const arrow = delta > 0 ? "↑" : delta < 0 ? "↓" : "→";
+  let tone = "is-neutral";
+  if (rule === "higher-good" && delta !== 0) tone = delta > 0 ? "is-good" : "is-bad";
+  if (rule === "lower-good" && delta !== 0) tone = delta < 0 ? "is-good" : "is-bad";
+  const withinTolerance = metric.id === "acos" && delta > 0 && metric.within_attribution_tolerance === true;
+  if (withinTolerance) tone = "is-neutral";
+  let text = "持平";
+  if (delta !== 0 && metric.unit === "ratio") {
+    const percentagePoints = Math.abs(delta) * 100;
+    const digits = percentagePoints > 0 && percentagePoints < 0.01 ? 3 : 2;
+    text = `${formatNumber(percentagePoints, digits)} 个百分点`;
+  } else if (delta !== 0 && metric.delta_rate !== null && metric.delta_rate !== undefined) {
+    text = formatPercent(Math.abs(metric.delta_rate), true, 1);
+  } else if (delta !== 0) {
+    text = weeklyValue(Math.abs(delta), weeklyMetricType(metric));
+  }
+  const toleranceText = withinTolerance ? `<em>归因容忍内</em>` : "";
+  return `<span class="weekly-delta ${tone}">${arrow} ${text}${toleranceText}</span>`;
+}
+
+function weeklyKpiCard(metric, tone, rule = "neutral") {
+  const type = weeklyMetricType(metric);
+  const currentDisplay = type === "currency" && metric?.current !== null && metric?.current !== undefined
+    ? formatCurrency(metric.current, true)
+    : weeklyValue(metric?.current, type);
+  const previousDisplay = type === "currency" && metric?.previous !== null && metric?.previous !== undefined
+    ? formatCurrency(metric.previous, true)
+    : weeklyValue(metric?.previous, type);
+  return `<article class="kpi-card weekly-kpi" data-tone="${escapeHtml(tone)}">
+    <p class="kpi-card__label">${escapeHtml(metric?.label || "-")}</p>
+    <p class="kpi-card__value">${currentDisplay}</p>
+    <div class="weekly-kpi__compare">
+      <span>上期 ${previousDisplay}</span>
+      ${weeklyDelta(metric, rule)}
+    </div>
+  </article>`;
+}
+
+function weeklyMetricCell(metric, rule = "neutral") {
+  const type = weeklyMetricType(metric);
+  return `<div class="weekly-metric">
+    <span>${escapeHtml(metric?.label || "-")}</span>
+    <strong>${weeklyValue(metric?.current, type)}</strong>
+    <small><span>上期 ${weeklyValue(metric?.previous, type)}</span>${weeklyDelta(metric, rule)}</small>
+  </div>`;
+}
+
+function weeklyFactList(findings, emptyMessage = "当前没有达到提示阈值的已确认变化") {
+  if (!Array.isArray(findings) || findings.length === 0) {
+    return `<p class="weekly-facts-empty">${escapeHtml(emptyMessage)}</p>`;
+  }
+  return `<ul class="weekly-fact-list">${findings.map((finding) => `<li>${escapeHtml(finding)}</li>`).join("")}</ul>`;
+}
+
+function weeklyCategoryCard(category, options = {}) {
+  const metrics = category.metrics || {};
+  const metricIds = [
+    "front_units",
+    "front_sales",
+    "ad_spend",
+    "ad_sales",
+    "coupon_promotion_cost",
+    "coupon_promotion_rate",
+    "acos",
+    "cvr",
+  ];
+  const isHighRisk = options.isHighRisk === true;
+  const riskScore = Number(category.risk?.score);
+  const badge = isHighRisk
+    ? `高风险 #${options.rank}${Number.isFinite(riskScore) ? ` · ${formatNumber(riskScore, 2)}分` : ""}`
+    : "固定关注";
+  const typeLabel = category.is_required ? "固定品类" : "非固定品类";
+  return `<details class="weekly-category-card" open>
+    <summary>
+      <span class="weekly-category-card__title">
+        <strong>${escapeHtml(category.category)}</strong>
+        <span>${escapeHtml(typeLabel)}</span>
+      </span>
+      <span class="weekly-status ${isHighRisk ? "is-danger" : "is-neutral"}">${escapeHtml(badge)}</span>
+    </summary>
+    <div class="weekly-category-card__body">
+      <div class="weekly-metric-grid">
+        ${metricIds.map((metricId) => weeklyMetricCell(metrics[metricId], weeklyMetricRule(metricId))).join("")}
+      </div>
+      <div class="weekly-confirmed-block">
+        <strong>已确认现象</strong>
+        ${weeklyFactList(category.confirmed_findings)}
+      </div>
+    </div>
+  </details>`;
+}
+
+function weeklyOverviewRows(data) {
+  const period = data.period || {};
+  const rows = [
+    ["current", period.current_label, data.overview?.current || {}],
+    ["previous", period.previous_label, data.overview?.previous || {}],
+  ];
+  return rows.map(([periodKey, periodLabel, values]) => ({
+    period_key: periodKey,
+    period_label: periodLabel,
+    ...values,
+  }));
+}
+
+function weeklyCategoryRows(categories, highRiskNames) {
+  return categories.map((category) => ({
+    category: category.category,
+    attention_type: highRiskNames.has(category.category) ? "高风险 Top 4" : "固定关注",
+    risk_score: category.risk?.score,
+    ...category.current,
+  }));
+}
+
+function weeklySelfRows(section, period) {
+  return (section?.rows || []).map((row) => ({
+    ...row,
+    period_label: row.period_key === "current" ? period.current_label : period.previous_label,
+  }));
+}
+
+function weeklyGeneratedLabel(value) {
+  const generated = value ? new Date(value) : null;
+  if (!generated || Number.isNaN(generated.valueOf())) return "生成时间未知";
+  return generated.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function renderWeekly() {
+  const data = state.weeklyReport;
+  if (!data) {
+    const detail = state.weeklyLoadError ? `（${state.weeklyLoadError}）` : "";
+    root.innerHTML = emptyState(`尚未读取到独立周报 JSON ${detail}`);
+    return;
+  }
+  const period = data.period || {};
+  const periodLabel = `${period.current_label || "-"} vs ${period.previous_label || "-"}`;
+  const overviewMetrics = data.overview?.metrics || {};
+  const highRisk = data.categories?.high_risk || [];
+  const fixedRemaining = data.categories?.fixed_remaining || [];
+  const displayedCategories = data.categories?.all_displayed || [...highRisk, ...fixedRemaining];
+  const highRiskNames = new Set(highRisk.map((category) => category.category));
+  const sections = data.self_invest?.sections || {};
+  const selfTabs = [
+    ["overall", "整体"],
+    ["advantage", "优势引流"],
+    ["auto", "自动捡漏"],
+    ["sb", "SB"],
+    ["sd", "SD"],
+  ].filter(([key]) => sections[key]);
+  if (!sections[state.ui.weeklySelfTab]) state.ui.weeklySelfTab = selfTabs[0]?.[0] || "overall";
+  const activeSelf = sections[state.ui.weeklySelfTab] || {};
+  const activeSelfMetrics = activeSelf.metrics || {};
+  const selfRows = weeklySelfRows(activeSelf, period);
+  const overallRows = weeklyOverviewRows(data);
+  const categoryDetailRows = weeklyCategoryRows(displayedCategories, highRiskNames);
+  const quality = data.data_quality?.reconciliation_summary || {};
+  const overallColumns = [
+    { field: "period_label", label: "周期" },
+    { field: "front_units", label: "前台销量", numeric: true, render: (v) => weeklyValue(v, "integer") },
+    { field: "front_sales", label: "前台销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "ad_spend", label: "广告花费", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "ad_sales", label: "广告销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "coupon_promotion_cost", label: "coupon和促销费用", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "coupon_promotion_rate", label: "coupon和促销费用率", numeric: true, render: (v) => weeklyValue(v, "percent") },
+    { field: "acos", label: "ACOS", numeric: true, render: (v) => weeklyValue(v, "percent") },
+    { field: "cvr", label: "CVR", numeric: true, render: (v) => weeklyValue(v, "percent") },
+    { field: "cpc", label: "CPC", numeric: true, render: (v) => weeklyValue(v, "currency") },
+  ];
+  const categoryColumns = [
+    { field: "category", label: "品类" },
+    { field: "attention_type", label: "关注类型" },
+    { field: "risk_score", label: "风险分", numeric: true, render: (v) => weeklyValue(v, "number") },
+    { field: "front_units", label: "本期销量", numeric: true, render: (v) => weeklyValue(v, "integer") },
+    { field: "front_sales", label: "本期销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "ad_spend", label: "本期广告花费", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "ad_sales", label: "本期广告销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "coupon_promotion_cost", label: "coupon和促销费用", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "coupon_promotion_rate", label: "coupon和促销费用率", numeric: true, render: (v) => weeklyValue(v, "percent") },
+    { field: "acos", label: "本期 ACOS", numeric: true, render: (v) => weeklyValue(v, "percent") },
+    { field: "cvr", label: "本期 CVR", numeric: true, render: (v) => weeklyValue(v, "percent") },
+  ];
+  const selfColumns = [
+    { field: "period_label", label: "时期" },
+    { field: "parent_tag", label: "父标签" },
+    { field: "child_tag", label: "子标签" },
+    { field: "creator", label: "创建人" },
+    { field: "campaign_count", label: "活动数", numeric: true, render: (v) => weeklyValue(v, "integer") },
+    { field: "impressions", label: "曝光", numeric: true, render: (v) => weeklyValue(v, "integer") },
+    { field: "clicks", label: "点击", numeric: true, render: (v) => weeklyValue(v, "integer") },
+    { field: "spend", label: "花费", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "ad_sales", label: "广告销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
+    { field: "ad_orders", label: "广告订单", numeric: true, render: (v) => weeklyValue(v, "integer") },
+    { field: "acos", label: "ACOS", numeric: true, render: (v) => weeklyValue(v, "percent") },
+    { field: "cvr", label: "CVR", numeric: true, render: (v) => weeklyValue(v, "percent") },
+  ];
+  const sourceNames = (data.source?.files || []).map((file) => file.name).join("、");
+  const exchangeRate = data.meta?.exchange_rate_rmb_to_usd;
+  const introNote = `JSON生成：${weeklyGeneratedLabel(data.meta?.generated_at)}${exchangeRate ? `；换算汇率 1 USD = ${formatNumber(exchangeRate, 2)} RMB` : ""}`;
+
+  root.innerHTML = `
+    ${introMarkup("周度广告复盘", "聚焦销售、广告效率、coupon与促销费用、重点品类和自投广告；页面仅展示脚本已确认的事实。", periodLabel, introNote)}
+    <section class="dashboard-section" id="weekly-overview">
+      ${sectionHead("总体概览", "六项核心指标同时展示本期、上期和环比；广告花费与coupon和促销费用只显示方向。", periodLabel)}
+      <div class="kpi-grid kpi-grid--six">
+        ${weeklyKpiCard(overviewMetrics.front_units, "primary", "higher-good")}
+        ${weeklyKpiCard(overviewMetrics.front_sales, "teal", "higher-good")}
+        ${weeklyKpiCard(overviewMetrics.ad_spend, "orange", "neutral")}
+        ${weeklyKpiCard(overviewMetrics.coupon_promotion_cost, "orange", "neutral")}
+        ${weeklyKpiCard(overviewMetrics.acos, "red", "lower-good")}
+        ${weeklyKpiCard(overviewMetrics.cvr, "primary", "higher-good")}
+      </div>
+      <div class="weekly-overview-findings">
+        <strong>本期已确认现象</strong>
+        ${weeklyFactList(data.overview?.confirmed_findings)}
+      </div>
+    </section>
+    <section class="dashboard-section" id="weekly-category">
+      ${sectionHead("重点品类", "先展示全部品类中风险最高的4个，再展示去重后的固定关注品类；卡片可折叠。", `${displayedCategories.length} 个品类`)}
+      <div class="weekly-category-group">
+        <div class="weekly-category-group__head">
+          <div><strong>高风险 Top 4</strong><span>来自全部品类，按脚本风险分排序</span></div>
+          <span>${highRisk.length} 个</span>
+        </div>
+        <div class="weekly-category-list">${highRisk.map((category, index) => weeklyCategoryCard(category, { isHighRisk: true, rank: index + 1 })).join("")}</div>
+      </div>
+      <div class="weekly-category-group">
+        <div class="weekly-category-group__head">
+          <div><strong>固定关注品类</strong><span>已剔除与高风险 Top 4 重复的品类</span></div>
+          <span>${fixedRemaining.length} 个</span>
+        </div>
+        <div class="weekly-category-list">${fixedRemaining.map((category) => weeklyCategoryCard(category)).join("")}</div>
+      </div>
+    </section>
+    <section class="dashboard-section" id="weekly-self-invest">
+      ${sectionHead("自投广告", "按整体、优势引流、自动捡漏、SB 和 SD 切换；比例指标由两期基础数据重新计算。", `${selfRows.length} 条记录`)}
+      ${segmentControl("weekly-self-invest", selfTabs, state.ui.weeklySelfTab)}
+      <div class="weekly-self-summary">
+        ${weeklyMetricCell(activeSelfMetrics.spend, "neutral")}
+        ${weeklyMetricCell(activeSelfMetrics.ad_sales, "higher-good")}
+        ${weeklyMetricCell(activeSelfMetrics.ad_orders, "higher-good")}
+        ${weeklyMetricCell(activeSelfMetrics.acos, "lower-good")}
+        ${weeklyMetricCell(activeSelfMetrics.cpc, "lower-good")}
+        ${weeklyMetricCell(activeSelfMetrics.cvr, "higher-good")}
+      </div>
+      <div class="weekly-self-note">
+        <strong>已确认现象</strong>
+        ${weeklyFactList(activeSelf.confirmed_findings)}
+      </div>
+      ${tableMarkup(`weekly-self-${state.ui.weeklySelfTab}`, selfRows, selfColumns, 30)}
+    </section>
+    <section class="dashboard-section" id="weekly-detail">
+      ${sectionHead("数据明细", "保留总体两期数据、当前重点品类和当前自投标签明细，便于逐项复核。", `Schema ${data.schema_version || "-"}`, { label: "查看最新 JSON", href: WEEKLY_DATA_URL })}
+      <div class="weekly-quality-grid">
+        <article class="weekly-quality-card"><span>对账检查</span><strong>${weeklyValue(quality.total_checks, "integer")}</strong><small>全部检查项</small></article>
+        <article class="weekly-quality-card is-good"><span>校验通过</span><strong>${weeklyValue(quality.passed, "integer")}</strong><small>允许范围内一致</small></article>
+        <article class="weekly-quality-card ${asNumber(quality.mismatches) > 0 ? "is-bad" : "is-good"}"><span>不一致</span><strong>${weeklyValue(quality.mismatches, "integer")}</strong><small>核心不一致会阻止生成</small></article>
+        <article class="weekly-quality-card ${asNumber(quality.missing_compare_rows) > 0 ? "is-bad" : "is-good"}"><span>缺少对比行</span><strong>${weeklyValue(quality.missing_compare_rows, "integer")}</strong><small>对比工作簿缺失</small></article>
+        <article class="weekly-quality-card is-neutral"><span>无法核验</span><strong>${weeklyValue(quality.unverifiable, "integer")}</strong><small>零分母或原表缺值</small></article>
+      </div>
+      <div class="weekly-detail-block"><h4>总体两期数据</h4>${tableMarkup("weekly-overall-detail", overallRows, overallColumns, 10)}</div>
+      <div class="weekly-detail-block"><h4>品类数据</h4>${tableMarkup("weekly-category-detail", categoryDetailRows, categoryColumns, 30)}</div>
+      <div class="weekly-detail-block"><h4>当前自投标签数据</h4>${tableMarkup("weekly-self-detail", selfRows, selfColumns, 30)}</div>
+      <div class="weekly-source-note">
+        <strong>数据范围说明</strong>
+        ${weeklyFactList(data.data_quality?.data_gaps, "暂无已知数据缺口")}
+        <p>输入来源：${escapeHtml(sourceNames || "-")}</p>
+      </div>
+    </section>`;
 }
 
 function unique(values) {
@@ -799,7 +1115,11 @@ function sdSpendFilterConfig(data) {
   const sdData = data.sd_spend || {};
   return [
     { id: "month", label: "月份", options: sdData.filters?.月份 || [] },
-    { id: "operator", label: "运营", options: sdData.filters?.运营 || [] },
+    {
+      id: "owner",
+      label: "运营组长",
+      options: sdData.filters?.运营组长 || unique((sdData.rows || []).map((row) => row.运营组长).filter(Boolean)),
+    },
   ];
 }
 
@@ -1001,15 +1321,15 @@ function renderMonthly() {
   initializeFilters("sd_spend", sdConfigs);
   const sdRows = (sdData.rows || []).filter((row) => rowMatches("sd_spend", row, {
     month: "时间月",
-    operator: "运营",
+    owner: "运营组长",
   })).sort((a, b) => String(b.时间日).localeCompare(String(a.时间日)) || asNumber(b.金额) - asNumber(a.金额));
-  const sdOperatorSummary = aggregateBy(sdRows, "运营", {
+  const sdOwnerSummary = aggregateBy(sdRows, "运营组长", {
     金额: (row) => row.金额,
   }).sort((a, b) => b.金额 - a.金额);
   const sdKpis = [
     kpiCard({ label: "SD总花费", value: sum(sdRows, "金额"), valueType: "yuan", tone: "primary", note: "当前筛选范围" }),
     kpiCard({ label: "覆盖 SKU", value: unique(sdRows.map((row) => row.平台SKU)).length, valueType: "integer", tone: "teal", note: "平台SKU去重" }),
-    kpiCard({ label: "运营人数", value: unique(sdRows.map((row) => row.运营)).length, valueType: "integer", tone: "orange", note: "当前筛选范围" }),
+    kpiCard({ label: "运营组长数", value: unique(sdRows.map((row) => row.运营组长)).length, valueType: "integer", tone: "orange", note: "当前筛选范围" }),
     kpiCard({ label: "覆盖品类", value: unique(sdRows.map((row) => row.品类)).length, valueType: "integer", tone: "red", note: "品类去重" }),
     kpiCard({ label: "覆盖天数", value: unique(sdRows.map((row) => row.时间日)).length, valueType: "integer", tone: "green", note: "有SD花费记录的日期" }),
   ].join("");
@@ -1074,12 +1394,12 @@ function renderMonthly() {
       ${tableMarkup("monthly-owner-table", ownerRows, ownerColumns, 30)}
     </section>
     <section class="dashboard-section" id="monthly-sd-spend">
-      ${sectionHead("SD花费核对", "固定统计损益科目为“广告花费-SD”的流水，用于按月份和运营核对花费。", `${sdRows.length} 条`)}
+      ${sectionHead("SD花费核对", "固定统计损益科目为“广告花费-SD”的流水，用于按月份和运营组长核对花费。", `${sdRows.length} 条`)}
       ${filterMarkup("sd_spend", sdConfigs, null, `${sdRows.length} 条SD花费记录`)}
       <div class="kpi-grid">${sdRows.length ? sdKpis : emptyState()}</div>
       <div class="chart-panel chart-panel--full">
-        <div class="chart-title-row"><div><h4>运营SD花费排名</h4><p>按当前筛选范围汇总，金额单位为人民币</p></div></div>
-        ${horizontalBarChart(sdOperatorSummary.slice(0, 15).map((row) => ({ label: row.运营, value: row.金额 })), { formatter: (v) => formatYuan(v) })}
+        <div class="chart-title-row"><div><h4>运营组长SD花费排名</h4><p>按当前筛选范围汇总，金额单位为人民币</p></div></div>
+        ${horizontalBarChart(sdOwnerSummary.slice(0, 15).map((row) => ({ label: row.运营组长, value: row.金额 })), { formatter: (v) => formatYuan(v) })}
       </div>
       <div style="height:14px"></div>
       ${tableMarkup("monthly-sd-spend-table", sdRows, sdColumns, 50)}
@@ -1243,7 +1563,7 @@ function renderInvalid() {
   ];
 
   root.innerHTML = `
-    ${introMarkup("无效低效广告复盘", "无效广告定义：近30天广告花费>5美金、订单=0、广告投放天数>14天、广告状态为投放中；低效广告定义：1.近30天点击数>15、广告花费<5美金、订单=0、广告投放天数>14天；2.ACOS>60%、广告投放天数>14天、广告状态为投放中", "2026年6月")}
+    ${introMarkup("无效低效广告复盘", "低效定义：有效状态=enabled 且 投放天数>14天 且 ACOS>50%；无效定义：有效状态=enabled 且 投放天数>7天 且 花费>0 且 订单=0", "2026年6月")}
     <div class="kpi-grid kpi-grid--six">
       ${kpiCard({ label: "无效广告活动", value: invalidRows.length, valueType: "integer", tone: "red", note: `花费 ${formatCurrency(invalidSpend)}` })}
       ${kpiCard({ label: "低效广告活动", value: inefficientRows.length, valueType: "integer", tone: "orange", note: `花费 ${formatCurrency(inefficientSpend)}` })}
@@ -1518,20 +1838,6 @@ function renderLingxing() {
         </div>
       </div>
     </section>
-    <section class="dashboard-section" id="rule-query">
-      ${sectionHead(
-        "领星自动化规则",
-        "查询当前已配置的领星自动化规则及通知信息。",
-        `${ruleQueryRows.length} 条`,
-        {
-          label: "新增/修改规则需求收集表",
-          href: "https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys",
-        },
-      )}
-      ${filterMarkup("lingxing_rule_query", ruleQueryConfigs, null, `${ruleQueryRows.length} 条规则`)}
-      ${tableMarkup("lingxing-rule-query-table", ruleQueryRows, ruleQueryColumns, 50)}
-      <div class="method-note">数据源：${escapeHtml(data.rule_query?.source || "未找到规则表")}；规则配置与规则触发记录为独立数据源，表内空白字段以横杠显示。</div>
-    </section>
     <section class="dashboard-section" id="saving-dashboard">
       ${sectionHead("节费规则看板", "主节费仅统计产品(ASIN)暂停和关键词/PAT暂停；否词只展示触发次数，理论节费金额和广告活动/广告组暂停金额有部分重叠，仅供参考。", `${formatCurrency(mainSaving.current)} 本周期理论节费`)}
       <div class="chart-grid">
@@ -1573,6 +1879,20 @@ function renderLingxing() {
       </div>
       ${tableMarkup("lingxing-detail-table", detailRows, detailColumns, 50)}
       <div class="method-note">花费、订单与销售额为当前筛选触发记录的取数窗口字段汇总，不等同整月广告表现。重复触发保留在明细中，但仅代表记录承载月化去重理论节费；CPC调整、广告位调优、库存类规则、广告活动暂停和广告组暂停不纳入本明细。</div>
+    </section>
+    <section class="dashboard-section" id="rule-query">
+      ${sectionHead(
+        "领星自动化规则",
+        "查询当前已配置的领星自动化规则及通知信息。",
+        `${ruleQueryRows.length} 条`,
+        {
+          label: "新增/修改规则需求收集表",
+          href: "https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys",
+        },
+      )}
+      ${filterMarkup("lingxing_rule_query", ruleQueryConfigs, null, `${ruleQueryRows.length} 条规则`)}
+      ${tableMarkup("lingxing-rule-query-table", ruleQueryRows, ruleQueryColumns, 50)}
+      <div class="method-note">数据源：${escapeHtml(data.rule_query?.source || "未找到规则表")}；规则配置与规则触发记录为独立数据源，表内空白字段以横杠显示。</div>
     </section>`;
 }
 
@@ -1778,15 +2098,36 @@ function renderBatch() {
 
 function renderSubnav() {
   const config = PAGE_CONFIG[state.page];
-  const sectionLinks = config.sections.map(([id, label], index) => `
-    <a class="subnav-link ${index === 0 ? "is-active" : ""}" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`).join("");
+  const sectionLinks = config.sections.map(([id, label], index) => {
+    const lingxingRuleRequestLink = state.page === "lingxing_rules" && id === "rule-query"
+      ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&amp;iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys" target="_blank" rel="noopener noreferrer">新增/修改规则需求收集表</a>`
+      : "";
+    return `<a class="subnav-link ${index === 0 ? "is-active" : ""}" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>
+      ${lingxingRuleRequestLink}`;
+  }).join("");
   const batchApplicationLink = state.page === "batch_launch"
     ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/notable/share/form/v01v9kqDejxQXkZ3OVx_tblZw1SF2hzdPvpj_vew40qPDRC?source=link" target="_blank" rel="noopener noreferrer">批量投放申请表</a>`
     : "";
-  const lingxingRuleRequestLink = state.page === "lingxing_rules"
-    ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&amp;iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys" target="_blank" rel="noopener noreferrer">新增/修改规则需求收集表</a>`
-    : "";
-  subnav.innerHTML = sectionLinks + batchApplicationLink + lingxingRuleRequestLink;
+  subnav.innerHTML = sectionLinks + batchApplicationLink;
+}
+
+function updateDataStatusForCurrentPage() {
+  if (state.page === "weekly_review") {
+    if (!state.weeklyReport) {
+      dataStatus.className = "data-status is-error";
+      dataStatus.innerHTML = '<span class="status-dot"></span><span>周报数据未加载</span>';
+      return;
+    }
+    dataStatus.className = "data-status is-ready";
+    dataStatus.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(weeklyGeneratedLabel(state.weeklyReport.meta?.generated_at))}</span>`;
+    return;
+  }
+  const generated = state.data?.meta?.generated_at ? new Date(state.data.meta.generated_at) : null;
+  const freshness = generated && !Number.isNaN(generated.valueOf())
+    ? `${generated.toLocaleDateString("zh-CN")} ${generated.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
+    : "数据已就绪";
+  dataStatus.className = "data-status is-ready";
+  dataStatus.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(freshness)}</span>`;
 }
 
 function renderCurrentPage() {
@@ -1794,8 +2135,10 @@ function renderCurrentPage() {
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.page === state.page);
   });
+  updateDataStatusForCurrentPage();
   renderSubnav();
   if (state.page === "monthly_review") renderMonthly();
+  if (state.page === "weekly_review") renderWeekly();
   if (state.page === "invalid_low_efficiency") renderInvalid();
   if (state.page === "lingxing_rules") renderLingxing();
   if (state.page === "batch_launch") renderBatch();
@@ -2065,6 +2408,7 @@ function handleRootClick(event) {
     const segment = segmentButton.closest("[data-segment]").dataset.segment;
     const value = segmentButton.dataset.segmentValue;
     if (segment === "monthly-category") state.ui.monthlyCategoryTab = value;
+    if (segment === "weekly-self-invest") state.ui.weeklySelfTab = value;
     if (segment === "invalid-detail") state.ui.invalidDetailTab = value;
     if (segment === "batch-summary") state.ui.batchSummaryTab = value;
     if (segment === "batch-acos-sort") state.ui.batchAcosSort = value;
@@ -2173,19 +2517,24 @@ async function loadData() {
   loading.classList.remove("is-hidden");
   errorState.classList.add("is-hidden");
   root.innerHTML = "";
+  state.weeklyReport = null;
+  state.weeklyLoadError = "";
   dataStatus.className = "data-status";
   dataStatus.innerHTML = '<span class="status-dot"></span><span>正在读取数据</span>';
   try {
+    const weeklyRequest = fetch(WEEKLY_DATA_URL, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return { data: await response.json(), error: "" };
+      })
+      .catch((error) => ({ data: null, error: error.message || "读取失败" }));
     const response = await fetch(DATA_URL, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
+    const weeklyResult = await weeklyRequest;
+    state.weeklyReport = weeklyResult.data;
+    state.weeklyLoadError = weeklyResult.error;
     loading.classList.add("is-hidden");
-    dataStatus.classList.add("is-ready");
-    const generated = state.data.meta?.generated_at ? new Date(state.data.meta.generated_at) : null;
-    const freshness = generated && !Number.isNaN(generated.valueOf())
-      ? `${generated.toLocaleDateString("zh-CN")} ${generated.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
-      : "数据已就绪";
-    dataStatus.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(freshness)}</span>`;
     renderCurrentPage();
   } catch (error) {
     loading.classList.add("is-hidden");
