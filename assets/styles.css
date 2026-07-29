@@ -692,6 +692,50 @@ button {
   gap: 8px;
 }
 
+.range-input-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.range-input-pair .search-input {
+  padding: 0 10px;
+}
+
+.range-select__menu {
+  width: max(100%, 260px);
+  max-width: 320px;
+  padding: 12px;
+}
+
+.range-select__body {
+  display: grid;
+  gap: 10px;
+}
+
+.range-select__body label {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.range-select__body .search-input {
+  height: 38px;
+  padding: 0 10px;
+}
+
+.range-select__hint {
+  margin: 10px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .button {
   height: 40px;
   padding: 0 16px;
@@ -1223,6 +1267,21 @@ button {
 .external-data-link:focus-visible {
   outline: 3px solid rgba(53, 91, 209, 0.22);
   outline-offset: 2px;
+}
+
+.embed-panel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.dingtalk-embed {
+  display: block;
+  width: 100%;
+  min-height: 533px;
+  border: 0;
+  background: transparent;
 }
 
 .chart-grid {
@@ -1825,17 +1884,35 @@ button {
 }
 
 #batch-operation-detail .data-table {
-  min-width: 1390px;
+  min-width: 1120px;
+  table-layout: fixed;
 }
 
-#batch-operation-detail .data-table th:nth-child(-n + 4),
-#batch-operation-detail .data-table td:nth-child(-n + 4) {
+#batch-operation-detail .data-table th,
+#batch-operation-detail .data-table td {
+  padding: 9px 8px;
+}
+
+#batch-operation-detail .data-table th:nth-child(-n + 6),
+#batch-operation-detail .data-table td:nth-child(-n + 6) {
   white-space: nowrap;
 }
 
-#batch-operation-detail .data-table th:nth-child(4),
-#batch-operation-detail .data-table td:nth-child(4) {
-  min-width: 132px;
+#batch-operation-detail .data-table th:nth-child(1) { width: 6%; }
+#batch-operation-detail .data-table th:nth-child(2) { width: 9%; }
+#batch-operation-detail .data-table th:nth-child(3) { width: 7%; }
+#batch-operation-detail .data-table th:nth-child(4) { width: 8%; }
+#batch-operation-detail .data-table th:nth-child(5) { width: 7%; }
+#batch-operation-detail .data-table th:nth-child(6) { width: 8%; }
+#batch-operation-detail .data-table th:nth-child(7) { width: 8%; }
+#batch-operation-detail .data-table th:nth-child(8) { width: 9%; }
+#batch-operation-detail .data-table th:nth-child(9) { width: 10%; }
+#batch-operation-detail .data-table th:nth-child(10) { width: 8%; }
+#batch-operation-detail .data-table th:nth-child(11) { width: 8%; }
+#batch-operation-detail .data-table th:nth-child(12) { width: 12%; }
+
+#batch-operation-detail .data-table td {
+  overflow-wrap: anywhere;
 }
 
 #rule-query .data-table {

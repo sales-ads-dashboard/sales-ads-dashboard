@@ -48,6 +48,7 @@ const PAGE_CONFIG = {
       ["batch-acos", "批量 ACOS 对比"],
       ["batch-summary", "批量投放汇总明细"],
       ["batch-operation-detail", "批量投放批次查询"],
+      ["batch-demand-stats", "本周需求统计"],
     ],
   },
 };
@@ -67,6 +68,12 @@ const state = {
     applied: "",
   },
   invalidDetailDays: {
+    minDraft: "",
+    maxDraft: "",
+    minApplied: null,
+    maxApplied: null,
+  },
+  batchOperationDays: {
     minDraft: "",
     maxDraft: "",
     minApplied: null,
@@ -119,6 +126,36 @@ function asNumber(value) {
 
 function sum(rows, field) {
   return rows.reduce((total, row) => total + asNumber(row[field]), 0);
+}
+
+function splitMultiValue(value) {
+  return String(value ?? "")
+    .split(/[、,，;；]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function firstBatchDateFromBatchNumber(value) {
+  const match = String(value ?? "").match(/(\d{6})/);
+  if (!match) return null;
+  const token = match[1];
+  const year = 2000 + Number(token.slice(0, 2));
+  const month = Number(token.slice(2, 4));
+  const day = Number(token.slice(4, 6));
+  if (!month || month > 12 || !day || day > 31) return null;
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
+}
+
+function batchOnlineDays(batchNumber) {
+  const start = firstBatchDateFromBatchNumber(batchNumber);
+  if (!start) return null;
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const diffDays = Math.floor((todayStart - startDay) / 86400000) + 1;
+  return diffDays > 0 ? diffDays : 1;
 }
 
 function round(value, digits = 2) {
@@ -684,6 +721,72 @@ function filterMarkup(pageId, configs, searchConfig = null, note = "") {
       <div class="filter-grid">
         ${fields}
         ${search}
+        <div class="filter-actions">
+          <button type="button" class="button button--primary" data-filter-query>查询</button>
+          <button type="button" class="button" data-filter-reset>重置</button>
+        </div>
+      </div>
+    </section>`;
+}
+
+function batchOperationFilterMarkup(configs, note = "") {
+  const pageId = "batch_operation_detail";
+  initializeFilters(pageId, configs);
+  const fields = configs.map((config) => {
+    const options = filterOptions(pageId, config, true);
+    const selected = selectedSet(pageId, config.id, true);
+    return `
+      <div class="filter-field">
+        <span class="filter-field__label">${escapeHtml(config.label)}</span>
+        <div class="multi-select" data-filter-id="${escapeHtml(config.id)}">
+          <button type="button" class="multi-select__button" aria-expanded="false">
+            ${escapeHtml(selectedLabel(pageId, config))}
+          </button>
+          <div class="multi-select__menu is-hidden">
+            ${multiSelectMenuMarkup(options, selected)}
+          </div>
+        </div>
+      </div>`;
+  });
+  const range = state.batchOperationDays;
+  const appliedLabel = (() => {
+    if (!range.minDraft && !range.maxDraft) return "全部";
+    if (range.minDraft && range.maxDraft) return `${range.minDraft}天 - ${range.maxDraft}天`;
+    if (range.minDraft) return `大于 ${range.minDraft} 天`;
+    return `小于 ${range.maxDraft} 天`;
+  })();
+  fields.splice(1, 0, `
+    <div class="filter-field batch-days-field">
+      <span class="filter-field__label">上线天数</span>
+      <div class="multi-select range-select" data-range-select="batch-operation-days">
+        <button type="button" class="multi-select__button" aria-expanded="false">
+          ${escapeHtml(appliedLabel)}
+        </button>
+        <div class="multi-select__menu range-select__menu is-hidden">
+          <div class="range-select__body">
+            <label>
+              <span>大于</span>
+              <input class="search-input" data-batch-days-min type="number" min="0" step="1"
+                placeholder="天数" value="${escapeHtml(range.minDraft)}" />
+            </label>
+            <label>
+              <span>小于</span>
+              <input class="search-input" data-batch-days-max type="number" min="0" step="1"
+                placeholder="天数" value="${escapeHtml(range.maxDraft)}" />
+            </label>
+          </div>
+          <p class="range-select__hint">可只填一个，也可两个都填；点查询后生效。</p>
+        </div>
+      </div>
+    </div>`);
+  return `
+    <section class="filter-panel batch-operation-filter" data-page-filter="${pageId}">
+      <div class="filter-panel__head">
+        <h3>数据筛选</h3>
+        <span class="filter-summary">${escapeHtml(note)}</span>
+      </div>
+      <div class="filter-grid">
+        ${fields.join("")}
         <div class="filter-actions">
           <button type="button" class="button button--primary" data-filter-query>查询</button>
           <button type="button" class="button" data-filter-reset>重置</button>
@@ -1910,6 +2013,34 @@ function batchFilterConfig(data) {
   ];
 }
 
+function batchOperationFilterConfig(data) {
+  const rows = data.operation_batch_rows || [];
+  const filters = data.operation_filters || {};
+  return [
+    { id: "month", label: "月份", options: (filters.月份 || unique(rows.map((row) => row.月份))).map(String) },
+    { id: "owner", label: "运营组长", options: filters.运营组长 || unique(rows.map((row) => row.运营组长)) },
+    { id: "category", label: "品类", options: filters.品类 || unique(rows.flatMap((row) => splitMultiValue(row.品类名称))) },
+    { id: "operator", label: "运营", options: filters.运营 || unique(rows.map((row) => row.运营)) },
+  ];
+}
+
+function operationRowMatches(row, filters) {
+  const monthSet = selectedSet("batch_operation_detail", "month");
+  const ownerSet = selectedSet("batch_operation_detail", "owner");
+  const categorySet = selectedSet("batch_operation_detail", "category");
+  const operatorSet = selectedSet("batch_operation_detail", "operator");
+  const minDays = state.batchOperationDays.minApplied;
+  const maxDays = state.batchOperationDays.maxApplied;
+  const onlineDays = Number(row.上线天数);
+  const matchesMulti = (value, selected) => selected.size > 0 && splitMultiValue(value).some((item) => selected.has(item));
+  return monthSet.has(String(row.月份))
+    && (minDays === null || onlineDays > minDays)
+    && (maxDays === null || onlineDays < maxDays)
+    && ownerSet.has(row.运营组长)
+    && matchesMulti(row.品类名称, categorySet)
+    && operatorSet.has(row.运营);
+}
+
 function batchAggregate(rows) {
   const batchCount = sum(rows, "批量活动数量");
   const allCount = sum(rows, "全部活动数量");
@@ -1958,13 +2089,13 @@ function batchRowsByDimension(rows, dimensionField, options = {}) {
 function renderBatch() {
   const data = state.data.batch_launch;
   const configs = batchFilterConfig(data);
+  const operationConfigs = batchOperationFilterConfig(data);
   initializeFilters("batch_launch", configs);
-  initializeFilters("batch_operation_detail", []);
+  initializeFilters("batch_operation_detail", operationConfigs);
   const monthSet = selectedSet("batch_launch", "month");
   const categorySet = selectedSet("batch_launch", "category");
   const teamSet = selectedSet("batch_launch", "team");
   const ownerSet = selectedSet("batch_launch", "owner");
-  const operationQuery = (state.searchApplied.batch_operation_detail || "").trim();
   const selectedMonths = [...monthSet].sort((a, b) => Number(a) - Number(b));
   const periodLabel = selectedMonths.join("+");
   const categoryAllSelected = isAllSelected("batch_launch", configs.find((config) => config.id === "category"));
@@ -2002,25 +2133,27 @@ function renderBatch() {
     return { label: month === "202605" ? "5月" : month === "202606" ? "6月" : month, value: aggregate.batchCount };
   });
 
-  const operationScopeKeys = new Set(crossRows.map((row) => `${row.月份}::${row.品类负责人}::${row.品类}`));
   const operationRows = (data.operation_batch_rows || [])
-    .filter((row) => String(row.品类名称 || "").split("、").some((category) => operationScopeKeys.has(`${row.月份}::${row.运营组长}::${category}`))
-      && fuzzyOptionMatch(row.运营, operationQuery))
+    .map((row) => ({
+      ...row,
+      上线天数: batchOnlineDays(row.运营批次号),
+    }))
+    .filter((row) => operationRowMatches(row, operationConfigs))
     .sort((a, b) => String(b.月份).localeCompare(String(a.月份))
       || String(a.运营).localeCompare(String(b.运营), "zh-CN")
       || String(a.运营批次号).localeCompare(String(b.运营批次号), "zh-CN"));
   const operationColumns = [
     { field: "月份", label: "月份", render: (v) => String(v) === "202605" ? "2026-05" : String(v) === "202606" ? "2026-06" : escapeHtml(v) },
-    { field: "运营", label: "运营" },
+    { field: "运营批次号", label: "批次号" },
+    { field: "上线天数", label: "上线天数", numeric: true, render: (v) => v === null ? "-" : `${formatNumber(v, 0)}天` },
     { field: "运营组长", label: "运营组长" },
-    { field: "运营批次号", label: "运营批次号" },
-    { field: "品类名称", label: "品类名称", long: true },
+    { field: "运营", label: "运营" },
+    { field: "品类名称", label: "品类" },
     { field: "活动数量", label: "活动数量", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "广告花费", label: "广告花费", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
     { field: "广告销售额", label: "广告销售额", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
     { field: "广告订单", label: "广告订单", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "平均CPC", label: "平均 CPC", numeric: true, render: (v) => v === null ? "-" : formatCurrency(v) },
-    { field: "平均CVR", label: "平均 CVR", numeric: true, render: (v) => v === null || v === "" || !Number.isFinite(Number(v)) ? "-" : `${formatNumber(v, 2)}%` },
     { field: "ACOS", label: "ACoS", numeric: true, render: (v) => v === null ? "-" : formatPercent(v, true) },
   ];
 
@@ -2090,9 +2223,21 @@ function renderBatch() {
     </section>
     <section class="dashboard-section" id="batch-operation-detail">
       ${sectionHead("批量投放批次查询", "批量投放批次查询表只提供批次整体数据，运营可以筛选自己名下的批次号，使用批次号到领星平台筛选活动，查看单条活动详情", `${operationRows.length} 条`)}
-      ${detailSearchMarkup("batch_operation_detail", { label: "运营姓名", placeholder: "输入运营姓名，支持模糊搜索" })}
+      ${batchOperationFilterMarkup(operationConfigs, `${operationRows.length} 条批次`)}
       ${tableMarkup("batch-operation-table", operationRows, operationColumns, 50)}
-      <div class="method-note">本查询表沿用页面上方的月份、运营组长、品类和团队筛选；运营姓名搜索仅作用于本表。</div>
+      <div class="method-note">本查询表使用独立筛选器，不受页面上方批量投放数据筛选影响；上线天数筛选仅作用于本表，不影响上方图表和汇总明细。</div>
+    </section>
+    <section class="dashboard-section" id="batch-demand-stats">
+      ${sectionHead("本周需求统计", "内嵌钉钉需求统计仪表盘，用于查看批量投放需求收集与完成情况。", "钉钉在线看板")}
+      <div class="embed-panel">
+        <iframe
+          class="dingtalk-embed"
+          src="https://alidocs.dingtalk.com/notable/share/dashboard/128717d4c5c7fcffe422786e31991dc2_v9kqDejxQXkZ3OVx"
+          title="本周需求统计"
+          loading="lazy"
+          referrerpolicy="no-referrer-when-downgrade"
+        ></iframe>
+      </div>
     </section>`;
 }
 
@@ -2160,6 +2305,7 @@ function pageFilterConfigs(pageId) {
   if (pageId === "lingxing_rules") return lingxingFilterConfig(state.data.lingxing_rules);
   if (pageId === "lingxing_rule_query") return ruleQueryFilterConfig(state.data.lingxing_rules);
   if (pageId === "batch_launch") return batchFilterConfig(state.data.batch_launch);
+  if (pageId === "batch_operation_detail") return batchOperationFilterConfig(state.data.batch_launch);
   return [];
 }
 
@@ -2227,6 +2373,26 @@ function filterMultiSelectOptions(input) {
 
 function applyFilters(pageId) {
   const sectionId = document.querySelector(`[data-page-filter="${CSS.escape(pageId)}"]`)?.closest(".dashboard-section")?.id;
+  if (pageId === "batch_operation_detail") {
+    const panel = document.querySelector(`[data-page-filter="${CSS.escape(pageId)}"]`);
+    const minText = panel?.querySelector("[data-batch-days-min]")?.value.trim() || "";
+    const maxText = panel?.querySelector("[data-batch-days-max]")?.value.trim() || "";
+    const minValue = minText === "" ? null : Number(minText);
+    const maxValue = maxText === "" ? null : Number(maxText);
+    if ((minValue !== null && (!Number.isFinite(minValue) || minValue < 0))
+      || (maxValue !== null && (!Number.isFinite(maxValue) || maxValue < 0))) {
+      showToast("上线天数请输入大于或等于 0 的数字");
+      return;
+    }
+    if (minValue !== null && maxValue !== null && minValue >= maxValue) {
+      showToast("“大于”天数必须小于“小于”天数");
+      return;
+    }
+    state.batchOperationDays.minDraft = minText;
+    state.batchOperationDays.maxDraft = maxText;
+    state.batchOperationDays.minApplied = minValue;
+    state.batchOperationDays.maxApplied = maxValue;
+  }
   Object.entries(state.filterDraft[pageId]).forEach(([id, values]) => {
     state.filterApplied[pageId][id] = cloneSet(values);
   });
@@ -2250,6 +2416,12 @@ function resetFilters(pageId) {
   });
   state.searchDraft[pageId] = "";
   state.searchApplied[pageId] = "";
+  if (pageId === "batch_operation_detail") {
+    state.batchOperationDays.minDraft = "";
+    state.batchOperationDays.maxDraft = "";
+    state.batchOperationDays.minApplied = null;
+    state.batchOperationDays.maxApplied = null;
+  }
   Object.keys(state.pagination).forEach((key) => { state.pagination[key] = 1; });
   if (sectionId) renderCurrentPageAtSection(sectionId);
   else renderCurrentPage();
@@ -2462,6 +2634,14 @@ function handleRootInput(event) {
     state.invalidDetailDays.maxDraft = event.target.value;
     return;
   }
+  if (event.target.matches("[data-batch-days-min]")) {
+    state.batchOperationDays.minDraft = event.target.value;
+    return;
+  }
+  if (event.target.matches("[data-batch-days-max]")) {
+    state.batchOperationDays.maxDraft = event.target.value;
+    return;
+  }
   if (event.target.matches(".multi-select__search")) {
     filterMultiSelectOptions(event.target);
     return;
@@ -2522,12 +2702,15 @@ async function loadData() {
   dataStatus.className = "data-status";
   dataStatus.innerHTML = '<span class="status-dot"></span><span>正在读取数据</span>';
   try {
-    const weeklyRequest = fetch(WEEKLY_DATA_URL, { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return { data: await response.json(), error: "" };
-      })
-      .catch((error) => ({ data: null, error: error.message || "读取失败" }));
+    const weeklyEnabled = Boolean(document.querySelector('[data-page="weekly_review"]:not([hidden])'));
+    const weeklyRequest = weeklyEnabled
+      ? fetch(WEEKLY_DATA_URL, { cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return { data: await response.json(), error: "" };
+        })
+        .catch((error) => ({ data: null, error: error.message || "读取失败" }))
+      : Promise.resolve({ data: null, error: "" });
     const response = await fetch(DATA_URL, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
