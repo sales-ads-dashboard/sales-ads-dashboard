@@ -14,12 +14,13 @@ const PAGE_CONFIG = {
     ],
   },
   weekly_review: {
-    title: "周度广告复盘看板",
+    title: "亚马逊周报月报",
     sections: [
-      ["weekly-overview", "总体概览"],
-      ["weekly-category", "重点品类"],
-      ["weekly-self-invest", "自投广告"],
-      ["weekly-detail", "数据明细"],
+      ["report-overview", "总体"],
+      ["report-attention", "需关注"],
+      ["report-coupon", "coupon和促销需关注"],
+      ["report-required", "指定"],
+      ["report-self-invest", "自投"],
     ],
   },
   invalid_low_efficiency: {
@@ -83,6 +84,14 @@ const state = {
   ui: {
     monthlyCategoryTab: "all",
     weeklySelfTab: "overall",
+    reportType: "weekly",
+    reportMonth: "",
+    reportWeek: "",
+    reportSelectionId: "",
+    reportOwnersDraft: new Set(),
+    reportOwnersApplied: new Set(),
+    reportCategoriesDraft: new Set(),
+    reportCategoriesApplied: new Set(),
     invalidDetailTab: "all",
     batchSummaryTab: "category",
     batchAcosSort: "desc",
@@ -441,147 +450,298 @@ function weeklyGeneratedLabel(value) {
   });
 }
 
+function reportFormatValue(header, value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const label = String(header || "");
+  const number = Number(value);
+  if (!Number.isFinite(number)) return escapeHtml(value);
+  if (["日期范围", "时期", "父标签", "子标签", "创建人", "operation_classification"].includes(label)) return escapeHtml(value);
+  if (label === "CPC变化") return `$${formatNumber(number, 3)}`;
+  if (label.includes("环比") || ["ACOS变化", "广告占比变化", "CVR变化", "coupon和促销占比变化", "CTR", "ACOS", "acos", "广告占比", "coupon和促销占比", "CVR"].includes(label)) {
+    return formatPercent(number, true, 2);
+  }
+  if (["前台销量变化", "广告销量变化", "点击数变化", "出库销量", "前台销量", "展示量", "曝光量", "点击数", "点击", "广告销量", "广告活动数", "广告订单"].includes(label)) {
+    return formatNumber(number, 0);
+  }
+  if (label.includes("销售额") || label.includes("花费") || label.includes("费用") || ["CPC", "CPC_$"].includes(label)) {
+    return label.startsWith("CPC") ? `$${formatNumber(number, 2)}` : formatCurrency(number);
+  }
+  return formatNumber(number, 2);
+}
+
+const REPORT_DETAIL_TRAILING_COLUMNS = ["展示量", "点击数", "广告占比", "coupon和促销占比"];
+
+function reportDetailColumnWeight(header) {
+  const weights = {
+    日期范围: 1.35,
+    operation_classification: 1.2,
+    coupon和促销费用: 1.15,
+    出库销量: 0.75,
+    出库销售额: 1.35,
+    广告花费: 0.95,
+    SP广告花费: 0.95,
+    SBSD广告花费: 0.95,
+    前台销量: 0.75,
+    前台销售额: 1.35,
+    广告销售额: 1.2,
+    广告销量: 0.75,
+    CPC_$: 0.65,
+    acos: 0.65,
+    CVR: 0.65,
+  };
+  return weights[header] || 0.9;
+}
+
+function reportTrailingColumnWidth(header) {
+  return {
+    展示量: 150,
+    点击数: 120,
+    广告占比: 120,
+    coupon和促销占比: 170,
+  }[header] || 120;
+}
+
+function syncReportTableWidths() {
+  document.querySelectorAll(".report-table--detail").forEach((table) => {
+    const shell = table.closest(".report-table-shell");
+    const mainColumns = [...table.querySelectorAll("col[data-report-main-weight]")];
+    const trailingColumns = [...table.querySelectorAll("col[data-report-trailing-width]")];
+    if (!shell || !mainColumns.length) return;
+    const visibleWidth = shell.clientWidth;
+    const totalWeight = mainColumns.reduce((sum, column) => sum + Number(column.dataset.reportMainWeight || 1), 0);
+    let assignedWidth = 0;
+    mainColumns.forEach((column, index) => {
+      const width = index === mainColumns.length - 1
+        ? visibleWidth - assignedWidth
+        : Math.round(visibleWidth * Number(column.dataset.reportMainWeight || 1) / totalWeight);
+      column.style.width = `${width}px`;
+      assignedWidth += width;
+    });
+    const trailingWidth = trailingColumns.reduce((sum, column) => {
+      const width = Number(column.dataset.reportTrailingWidth || 120);
+      column.style.width = `${width}px`;
+      return sum + width;
+    }, 0);
+    table.style.width = `${visibleWidth + trailingWidth}px`;
+    table.style.minWidth = `${visibleWidth + trailingWidth}px`;
+    table.dataset.reportVisibleColumnWidth = String(visibleWidth / mainColumns.length);
+  });
+
+  document.querySelectorAll(".report-table--comparison").forEach((table) => {
+    const container = table.closest(".report-category-block, #report-overview") || document;
+    const detailTable = container.querySelector(".report-table--detail");
+    const referenceWidth = Number(detailTable?.dataset.reportVisibleColumnWidth || 112);
+    const cellWidth = Math.max(64, Math.round(referenceWidth));
+    const columns = [...table.querySelectorAll("col")];
+    columns.forEach((column) => { column.style.width = `${cellWidth}px`; });
+    table.style.width = `${cellWidth * columns.length}px`;
+    table.style.minWidth = `${cellWidth * columns.length}px`;
+  });
+}
+
+function reportTable(table, tone = "current") {
+  const headers = table?.headers || [];
+  const rows = table?.rows || [];
+  if (!headers.length || !rows.length) return emptyState("该区域暂无表格数据");
+  const isDetail = headers.includes("日期范围");
+  const isComparison = !isDetail && headers.some((header) => String(header).includes("变化") || String(header).includes("环比"));
+  const indexedHeaders = headers.map((header, index) => ({ header, index }));
+  const displayHeaders = isDetail
+    ? [
+      ...indexedHeaders.filter(({ header }) => !REPORT_DETAIL_TRAILING_COLUMNS.includes(header)),
+      ...REPORT_DETAIL_TRAILING_COLUMNS.flatMap((target) => indexedHeaders.filter(({ header }) => header === target)),
+    ]
+    : indexedHeaders;
+  const typeClass = isDetail ? "report-table--detail" : isComparison ? "report-table--comparison" : "";
+  const shellClass = isDetail ? "report-table-shell--detail" : isComparison ? "report-table-shell--comparison" : "";
+  const colgroup = isDetail
+    ? `<colgroup>${displayHeaders.map(({ header }) => REPORT_DETAIL_TRAILING_COLUMNS.includes(header)
+      ? `<col data-report-trailing-width="${reportTrailingColumnWidth(header)}" />`
+      : `<col data-report-main-weight="${reportDetailColumnWeight(header)}" />`).join("")}</colgroup>`
+    : isComparison ? `<colgroup>${displayHeaders.map(() => "<col />").join("")}</colgroup>` : "";
+  return `<div class="report-table-shell ${shellClass}"><table class="report-table ${typeClass}">
+    ${colgroup}
+    <thead><tr>${displayHeaders.map(({ header }) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((row, index) => `<tr class="${index === 0 && tone === "period" ? "is-current" : index === 1 && tone === "period" ? "is-previous" : ""}">
+      ${displayHeaders.map(({ header, index: cellIndex }) => `<td>${reportFormatValue(header, row[cellIndex])}</td>`).join("")}
+    </tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
+function reportOptions(reports, key, labelKey) {
+  const seen = new Set();
+  return reports.filter((report) => {
+    const value = report[key];
+    if (!value || seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  }).map((report) => [report[key], report[labelKey]]);
+}
+
+function ensureReportSelection() {
+  const reports = Array.isArray(state.weeklyReport?.reports) ? state.weeklyReport.reports : [];
+  const availableTypes = [...new Set(reports.map((report) => report.report_type))];
+  if (!availableTypes.includes(state.ui.reportType)) state.ui.reportType = availableTypes[0] || "weekly";
+  const typeReports = reports.filter((report) => report.report_type === state.ui.reportType);
+  const months = reportOptions(typeReports, "month_key", "month_label");
+  if (!months.some(([value]) => value === state.ui.reportMonth)) state.ui.reportMonth = months[0]?.[0] || "";
+  const monthReports = typeReports.filter((report) => report.month_key === state.ui.reportMonth);
+  const weeks = reportOptions(monthReports, "week_label", "week_label");
+  if (state.ui.reportType === "weekly" && !weeks.some(([value]) => value === state.ui.reportWeek)) state.ui.reportWeek = weeks[0]?.[0] || "";
+  const report = monthReports.find((item) => state.ui.reportType === "monthly" || item.week_label === state.ui.reportWeek) || monthReports[0] || null;
+  if (report && state.ui.reportSelectionId !== report.id) {
+    const categories = report.categories.map((category) => category.category);
+    const owners = reportOwnerData(report).owners;
+    state.ui.reportSelectionId = report.id;
+    state.ui.reportOwnersDraft = new Set(owners);
+    state.ui.reportOwnersApplied = new Set(owners);
+    state.ui.reportCategoriesDraft = new Set(categories);
+    state.ui.reportCategoriesApplied = new Set(categories);
+    state.ui.weeklySelfTab = report.self_sections?.[0]?.key || "overall";
+  }
+  return { reports, typeReports, months, weeks, report };
+}
+
+function reportSelect(label, name, options, selected) {
+  return `<label class="report-filter-field"><span>${escapeHtml(label)}</span><select data-report-select="${escapeHtml(name)}">
+    ${options.map(([value, text]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(text)}</option>`).join("")}
+  </select></label>`;
+}
+
+const REPORT_CATEGORY_ALIASES = {
+  滤清器: "滤清",
+  三元催化器: "三元催化",
+  减震器: "减震",
+  点火系统: "点火套件",
+  散热器风扇: "散热器",
+};
+
+function reportOwnerData(report) {
+  const sourceRows = state.data?.monthly_review?.category_overview || [];
+  const sourceMap = new Map();
+  sourceRows.forEach((row) => {
+    const category = String(row.品类 || "").trim();
+    const owner = String(row.运营组长 || "").trim();
+    if (!category || !owner) return;
+    if (!sourceMap.has(category)) sourceMap.set(category, new Set());
+    sourceMap.get(category).add(owner);
+  });
+  const categoryOwners = new Map();
+  const owners = [];
+  (report.categories || []).forEach(({ category }) => {
+    const lookupCategory = REPORT_CATEGORY_ALIASES[category] || category;
+    const matchedOwners = [...(sourceMap.get(lookupCategory) || [])];
+    const resolvedOwners = matchedOwners.length ? matchedOwners : ["未匹配运营组长"];
+    categoryOwners.set(category, new Set(resolvedOwners));
+    resolvedOwners.forEach((owner) => {
+      if (!owners.includes(owner)) owners.push(owner);
+    });
+  });
+  return { owners, categoryOwners };
+}
+
+function reportSelectionMarkup(options, selected, emptyLabel) {
+  const selectedNames = options.filter((option) => selected.has(option));
+  if (!selectedNames.length) return `<strong data-report-category-summary-primary>${escapeHtml(emptyLabel)}</strong>`;
+  const extraCount = selectedNames.length - 1;
+  return `<strong data-report-category-summary-primary>${escapeHtml(selectedNames[0])}</strong>
+    ${extraCount > 0 ? `<em data-report-category-summary-count>+${extraCount}</em>` : ""}`;
+}
+
+function reportMultiFilter(report, kind) {
+  const isOwner = kind === "owner";
+  const options = isOwner ? reportOwnerData(report).owners : (report.categories || []).map((category) => category.category);
+  const applied = isOwner ? state.ui.reportOwnersApplied : state.ui.reportCategoriesApplied;
+  const draft = isOwner ? state.ui.reportOwnersDraft : state.ui.reportCategoriesDraft;
+  const label = isOwner ? "运营组长" : "品类";
+  return `<details class="report-category-filter" data-report-filter-kind="${kind}">
+    <summary><span class="report-category-filter__label">${label}</span><span class="report-category-filter__selection">${reportSelectionMarkup(options, applied, `未选择${label}`)}</span></summary>
+    <div class="report-category-filter__panel">
+      <input type="search" placeholder="搜索${label}" data-report-filter-search />
+      <div class="report-category-filter__tools"><button type="button" data-report-filter-action="all">全选</button><button type="button" data-report-filter-action="clear">清除</button></div>
+      <div class="report-category-filter__options">
+        ${options.map((option) => `<label data-report-filter-row><input type="checkbox" value="${escapeHtml(option)}" data-report-filter-option="${kind}" ${draft.has(option) ? "checked" : ""} /><span>${escapeHtml(option)}</span></label>`).join("")}
+      </div>
+    </div>
+  </details>`;
+}
+
+function reportCategoryBlock(category) {
+  return `<article class="report-category-block">
+    <div class="report-category-block__title"><strong>${escapeHtml(category.category)}</strong><span>${escapeHtml(category.status_label || category.group_label)}</span></div>
+    ${reportTable(category.compare)}
+    ${reportTable(category.period_data, "period")}
+    <div class="report-conclusion"><strong>分析结论</strong><p>${escapeHtml(category.conclusion || "暂无分析结论")}</p></div>
+  </article>`;
+}
+
+function reportFilteredCategories(report, group) {
+  const selectedCategories = state.ui.reportCategoriesApplied;
+  const selectedOwners = state.ui.reportOwnersApplied;
+  const ownerData = reportOwnerData(report);
+  return (report.categories || []).filter((category) => category.group === group
+    && selectedCategories.has(category.category)
+    && [...(ownerData.categoryOwners.get(category.category) || [])].some((owner) => selectedOwners.has(owner)));
+}
+
+function reportCategorySection(report, group, id, title) {
+  const categories = reportFilteredCategories(report, group);
+  if (!categories.length) return "";
+  return `<section class="dashboard-section report-section" id="${escapeHtml(id)}">
+    ${sectionHead(title, "保持 Excel 原有品类顺序和表格字段，不按网页重新排序。", `${categories.length} 个品类`)}
+    ${categories.map(reportCategoryBlock).join("")}
+  </section>`;
+}
+
 function renderWeekly() {
-  const data = state.weeklyReport;
-  if (!data) {
+  if (!state.weeklyReport) {
     const detail = state.weeklyLoadError ? `（${state.weeklyLoadError}）` : "";
-    root.innerHTML = emptyState(`尚未读取到独立周报 JSON ${detail}`);
+    root.innerHTML = emptyState(`尚未读取到周报月报 JSON ${detail}`);
     return;
   }
-  const period = data.period || {};
-  const periodLabel = `${period.current_label || "-"} vs ${period.previous_label || "-"}`;
-  const overviewMetrics = data.overview?.metrics || {};
-  const highRisk = data.categories?.high_risk || [];
-  const fixedRemaining = data.categories?.fixed_remaining || [];
-  const displayedCategories = data.categories?.all_displayed || [...highRisk, ...fixedRemaining];
-  const highRiskNames = new Set(highRisk.map((category) => category.category));
-  const sections = data.self_invest?.sections || {};
-  const selfTabs = [
-    ["overall", "整体"],
-    ["advantage", "优势引流"],
-    ["auto", "自动捡漏"],
-    ["sb", "SB"],
-    ["sd", "SD"],
-  ].filter(([key]) => sections[key]);
-  if (!sections[state.ui.weeklySelfTab]) state.ui.weeklySelfTab = selfTabs[0]?.[0] || "overall";
-  const activeSelf = sections[state.ui.weeklySelfTab] || {};
-  const activeSelfMetrics = activeSelf.metrics || {};
-  const selfRows = weeklySelfRows(activeSelf, period);
-  const overallRows = weeklyOverviewRows(data);
-  const categoryDetailRows = weeklyCategoryRows(displayedCategories, highRiskNames);
-  const quality = data.data_quality?.reconciliation_summary || {};
-  const overallColumns = [
-    { field: "period_label", label: "周期" },
-    { field: "front_units", label: "前台销量", numeric: true, render: (v) => weeklyValue(v, "integer") },
-    { field: "front_sales", label: "前台销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "ad_spend", label: "广告花费", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "ad_sales", label: "广告销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "coupon_promotion_cost", label: "coupon和促销费用", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "coupon_promotion_rate", label: "coupon和促销费用率", numeric: true, render: (v) => weeklyValue(v, "percent") },
-    { field: "acos", label: "ACOS", numeric: true, render: (v) => weeklyValue(v, "percent") },
-    { field: "cvr", label: "CVR", numeric: true, render: (v) => weeklyValue(v, "percent") },
-    { field: "cpc", label: "CPC", numeric: true, render: (v) => weeklyValue(v, "currency") },
-  ];
-  const categoryColumns = [
-    { field: "category", label: "品类" },
-    { field: "attention_type", label: "关注类型" },
-    { field: "risk_score", label: "风险分", numeric: true, render: (v) => weeklyValue(v, "number") },
-    { field: "front_units", label: "本期销量", numeric: true, render: (v) => weeklyValue(v, "integer") },
-    { field: "front_sales", label: "本期销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "ad_spend", label: "本期广告花费", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "ad_sales", label: "本期广告销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "coupon_promotion_cost", label: "coupon和促销费用", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "coupon_promotion_rate", label: "coupon和促销费用率", numeric: true, render: (v) => weeklyValue(v, "percent") },
-    { field: "acos", label: "本期 ACOS", numeric: true, render: (v) => weeklyValue(v, "percent") },
-    { field: "cvr", label: "本期 CVR", numeric: true, render: (v) => weeklyValue(v, "percent") },
-  ];
-  const selfColumns = [
-    { field: "period_label", label: "时期" },
-    { field: "parent_tag", label: "父标签" },
-    { field: "child_tag", label: "子标签" },
-    { field: "creator", label: "创建人" },
-    { field: "campaign_count", label: "活动数", numeric: true, render: (v) => weeklyValue(v, "integer") },
-    { field: "impressions", label: "曝光", numeric: true, render: (v) => weeklyValue(v, "integer") },
-    { field: "clicks", label: "点击", numeric: true, render: (v) => weeklyValue(v, "integer") },
-    { field: "spend", label: "花费", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "ad_sales", label: "广告销售额", numeric: true, render: (v) => weeklyValue(v, "currency") },
-    { field: "ad_orders", label: "广告订单", numeric: true, render: (v) => weeklyValue(v, "integer") },
-    { field: "acos", label: "ACOS", numeric: true, render: (v) => weeklyValue(v, "percent") },
-    { field: "cvr", label: "CVR", numeric: true, render: (v) => weeklyValue(v, "percent") },
-  ];
-  const sourceNames = (data.source?.files || []).map((file) => file.name).join("、");
-  const exchangeRate = data.meta?.exchange_rate_rmb_to_usd;
-  const introNote = `JSON生成：${weeklyGeneratedLabel(data.meta?.generated_at)}${exchangeRate ? `；换算汇率 1 USD = ${formatNumber(exchangeRate, 2)} RMB` : ""}`;
+  const { months, weeks, report } = ensureReportSelection();
+  if (!report) {
+    root.innerHTML = emptyState("data 文件夹中还没有可展示的周报或月报");
+    return;
+  }
+  const typeOptions = [
+    ["weekly", "周报"],
+    ["monthly", "月报"],
+  ].filter(([type]) => state.weeklyReport.reports.some((item) => item.report_type === type));
+  const activeSelf = report.self_sections.find((section) => section.key === state.ui.weeklySelfTab) || report.self_sections[0] || {};
+  const selfTabs = (report.self_sections || []).map((section) => [section.key, section.title]);
+  const periodLabel = `${report.current_period} vs ${report.previous_period}`;
+  const warningMarkup = (report.warnings || []).map((warning) => `<p class="report-warning">${escapeHtml(warning)}</p>`).join("");
 
   root.innerHTML = `
-    ${introMarkup("周度广告复盘", "聚焦销售、广告效率、coupon与促销费用、重点品类和自投广告；页面仅展示脚本已确认的事实。", periodLabel, introNote)}
-    <section class="dashboard-section" id="weekly-overview">
-      ${sectionHead("总体概览", "六项核心指标同时展示本期、上期和环比；广告花费与coupon和促销费用只显示方向。", periodLabel)}
-      <div class="kpi-grid kpi-grid--six">
-        ${weeklyKpiCard(overviewMetrics.front_units, "primary", "higher-good")}
-        ${weeklyKpiCard(overviewMetrics.front_sales, "teal", "higher-good")}
-        ${weeklyKpiCard(overviewMetrics.ad_spend, "orange", "neutral")}
-        ${weeklyKpiCard(overviewMetrics.coupon_promotion_cost, "orange", "neutral")}
-        ${weeklyKpiCard(overviewMetrics.acos, "red", "lower-good")}
-        ${weeklyKpiCard(overviewMetrics.cvr, "primary", "higher-good")}
-      </div>
-      <div class="weekly-overview-findings">
-        <strong>本期已确认现象</strong>
-        ${weeklyFactList(data.overview?.confirmed_findings)}
-      </div>
+    ${introMarkup("亚马逊广告周报月报", "按 Excel 原有版式展示总体、关注品类和自投数据；报告与品类均可切换。", periodLabel, `JSON生成：${weeklyGeneratedLabel(state.weeklyReport.meta?.generated_at)}；来源：${report.source_file}`)}
+    <div class="report-filter-bar report-filter-bar--${state.ui.reportType}">
+      ${reportSelect("报告类型", "type", typeOptions, state.ui.reportType)}
+      ${reportSelect("报告月份", "month", months, state.ui.reportMonth)}
+      ${state.ui.reportType === "weekly" ? reportSelect("报告周次", "week", weeks, state.ui.reportWeek) : ""}
+      ${reportMultiFilter(report, "owner")}
+      ${reportMultiFilter(report, "category")}
+      <div class="report-filter-actions"><button type="button" class="button button--primary" data-report-category-apply>查询</button><button type="button" class="button" data-report-category-reset>重置</button></div>
+    </div>
+    ${warningMarkup}
+    <section class="dashboard-section report-section" id="report-overview">
+      ${sectionHead("总体", report.subtitle, periodLabel)}
+      <p class="report-summary">${escapeHtml(report.overall?.summary || "")}</p>
+      ${reportTable(report.overall?.change)}
+      ${reportTable(report.overall?.rate)}
+      ${reportTable(report.overall?.period_data, "period")}
     </section>
-    <section class="dashboard-section" id="weekly-category">
-      ${sectionHead("重点品类", "先展示全部品类中风险最高的4个，再展示去重后的固定关注品类；卡片可折叠。", `${displayedCategories.length} 个品类`)}
-      <div class="weekly-category-group">
-        <div class="weekly-category-group__head">
-          <div><strong>高风险 Top 4</strong><span>来自全部品类，按脚本风险分排序</span></div>
-          <span>${highRisk.length} 个</span>
-        </div>
-        <div class="weekly-category-list">${highRisk.map((category, index) => weeklyCategoryCard(category, { isHighRisk: true, rank: index + 1 })).join("")}</div>
-      </div>
-      <div class="weekly-category-group">
-        <div class="weekly-category-group__head">
-          <div><strong>固定关注品类</strong><span>已剔除与高风险 Top 4 重复的品类</span></div>
-          <span>${fixedRemaining.length} 个</span>
-        </div>
-        <div class="weekly-category-list">${fixedRemaining.map((category) => weeklyCategoryCard(category)).join("")}</div>
-      </div>
-    </section>
-    <section class="dashboard-section" id="weekly-self-invest">
-      ${sectionHead("自投广告", "按整体、优势引流、自动捡漏、SB 和 SD 切换；比例指标由两期基础数据重新计算。", `${selfRows.length} 条记录`)}
-      ${segmentControl("weekly-self-invest", selfTabs, state.ui.weeklySelfTab)}
-      <div class="weekly-self-summary">
-        ${weeklyMetricCell(activeSelfMetrics.spend, "neutral")}
-        ${weeklyMetricCell(activeSelfMetrics.ad_sales, "higher-good")}
-        ${weeklyMetricCell(activeSelfMetrics.ad_orders, "higher-good")}
-        ${weeklyMetricCell(activeSelfMetrics.acos, "lower-good")}
-        ${weeklyMetricCell(activeSelfMetrics.cpc, "lower-good")}
-        ${weeklyMetricCell(activeSelfMetrics.cvr, "higher-good")}
-      </div>
-      <div class="weekly-self-note">
-        <strong>已确认现象</strong>
-        ${weeklyFactList(activeSelf.confirmed_findings)}
-      </div>
-      ${tableMarkup(`weekly-self-${state.ui.weeklySelfTab}`, selfRows, selfColumns, 30)}
-    </section>
-    <section class="dashboard-section" id="weekly-detail">
-      ${sectionHead("数据明细", "保留总体两期数据、当前重点品类和当前自投标签明细，便于逐项复核。", `Schema ${data.schema_version || "-"}`, { label: "查看最新 JSON", href: WEEKLY_DATA_URL })}
-      <div class="weekly-quality-grid">
-        <article class="weekly-quality-card"><span>对账检查</span><strong>${weeklyValue(quality.total_checks, "integer")}</strong><small>全部检查项</small></article>
-        <article class="weekly-quality-card is-good"><span>校验通过</span><strong>${weeklyValue(quality.passed, "integer")}</strong><small>允许范围内一致</small></article>
-        <article class="weekly-quality-card ${asNumber(quality.mismatches) > 0 ? "is-bad" : "is-good"}"><span>不一致</span><strong>${weeklyValue(quality.mismatches, "integer")}</strong><small>核心不一致会阻止生成</small></article>
-        <article class="weekly-quality-card ${asNumber(quality.missing_compare_rows) > 0 ? "is-bad" : "is-good"}"><span>缺少对比行</span><strong>${weeklyValue(quality.missing_compare_rows, "integer")}</strong><small>对比工作簿缺失</small></article>
-        <article class="weekly-quality-card is-neutral"><span>无法核验</span><strong>${weeklyValue(quality.unverifiable, "integer")}</strong><small>零分母或原表缺值</small></article>
-      </div>
-      <div class="weekly-detail-block"><h4>总体两期数据</h4>${tableMarkup("weekly-overall-detail", overallRows, overallColumns, 10)}</div>
-      <div class="weekly-detail-block"><h4>品类数据</h4>${tableMarkup("weekly-category-detail", categoryDetailRows, categoryColumns, 30)}</div>
-      <div class="weekly-detail-block"><h4>当前自投标签数据</h4>${tableMarkup("weekly-self-detail", selfRows, selfColumns, 30)}</div>
-      <div class="weekly-source-note">
-        <strong>数据范围说明</strong>
-        ${weeklyFactList(data.data_quality?.data_gaps, "暂无已知数据缺口")}
-        <p>输入来源：${escapeHtml(sourceNames || "-")}</p>
-      </div>
+    ${reportCategorySection(report, "attention", "report-attention", "需关注")}
+    ${reportCategorySection(report, "coupon", "report-coupon", "coupon和促销需关注")}
+    ${reportCategorySection(report, "required", "report-required", "指定")}
+    <section class="dashboard-section report-section" id="report-self-invest">
+      ${sectionHead("自投", "按 Excel 中的自投、优势引流、自动捡漏、SB、SD 板块切换。", `${activeSelf.table?.rows?.length || 0} 条`)}
+      ${segmentControl("report-self-invest", selfTabs, activeSelf.key)}
+      ${activeSelf.common ? `<div class="report-note"><strong>共性特征</strong><p>${escapeHtml(activeSelf.common)}</p></div>` : ""}
+      ${activeSelf.abnormal ? `<div class="report-note is-warning"><strong>异常表现</strong><p>${escapeHtml(activeSelf.abnormal)}</p></div>` : ""}
+      ${reportTable(activeSelf.table, "period")}
     </section>`;
+  window.requestAnimationFrame(syncReportTableWidths);
 }
 
 function unique(values) {
@@ -2243,7 +2403,17 @@ function renderBatch() {
 
 function renderSubnav() {
   const config = PAGE_CONFIG[state.page];
-  const sectionLinks = config.sections.map(([id, label], index) => {
+  let sections = config.sections;
+  if (state.page === "weekly_review" && state.weeklyReport) {
+    const report = ensureReportSelection().report;
+    const groupBySection = {
+      "report-attention": "attention",
+      "report-coupon": "coupon",
+      "report-required": "required",
+    };
+    if (report) sections = sections.filter(([id]) => !groupBySection[id] || reportFilteredCategories(report, groupBySection[id]).length > 0);
+  }
+  const sectionLinks = sections.map(([id, label], index) => {
     const lingxingRuleRequestLink = state.page === "lingxing_rules" && id === "rule-query"
       ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&amp;iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys" target="_blank" rel="noopener noreferrer">新增/修改规则需求收集表</a>`
       : "";
@@ -2429,6 +2599,44 @@ function resetFilters(pageId) {
 }
 
 function handleRootClick(event) {
+  const reportFilterAction = event.target.closest("[data-report-filter-action]");
+  if (reportFilterAction) {
+    const report = ensureReportSelection().report;
+    const filter = reportFilterAction.closest("[data-report-filter-kind]");
+    const kind = filter?.dataset.reportFilterKind;
+    if (!report || !kind) return;
+    const options = kind === "owner" ? reportOwnerData(report).owners : report.categories.map((category) => category.category);
+    const selected = reportFilterAction.dataset.reportFilterAction === "all" ? new Set(options) : new Set();
+    if (kind === "owner") state.ui.reportOwnersDraft = selected;
+    else state.ui.reportCategoriesDraft = selected;
+    filter.querySelectorAll("[data-report-filter-option]").forEach((checkbox) => { checkbox.checked = selected.has(checkbox.value); });
+    filter.querySelector(".report-category-filter__selection").innerHTML = reportSelectionMarkup(options, selected, kind === "owner" ? "未选择运营组长" : "未选择品类");
+    return;
+  }
+
+  const reportCategoryApply = event.target.closest("[data-report-category-apply]");
+  if (reportCategoryApply) {
+    state.ui.reportOwnersApplied = cloneSet(state.ui.reportOwnersDraft);
+    state.ui.reportCategoriesApplied = cloneSet(state.ui.reportCategoriesDraft);
+    renderCurrentPageAtSection("report-overview");
+    showToast(`已筛选 ${state.ui.reportOwnersApplied.size} 位运营组长、${state.ui.reportCategoriesApplied.size} 个品类`);
+    return;
+  }
+
+  const reportCategoryReset = event.target.closest("[data-report-category-reset]");
+  if (reportCategoryReset) {
+    const report = ensureReportSelection().report;
+    const categories = new Set((report?.categories || []).map((category) => category.category));
+    const owners = new Set(report ? reportOwnerData(report).owners : []);
+    state.ui.reportOwnersDraft = owners;
+    state.ui.reportOwnersApplied = cloneSet(owners);
+    state.ui.reportCategoriesDraft = categories;
+    state.ui.reportCategoriesApplied = cloneSet(categories);
+    renderCurrentPageAtSection("report-overview");
+    showToast("运营组长和品类筛选已重置");
+    return;
+  }
+
   const selectButton = event.target.closest(".multi-select__button");
   if (selectButton) {
     const select = selectButton.closest(".multi-select");
@@ -2581,6 +2789,7 @@ function handleRootClick(event) {
     const value = segmentButton.dataset.segmentValue;
     if (segment === "monthly-category") state.ui.monthlyCategoryTab = value;
     if (segment === "weekly-self-invest") state.ui.weeklySelfTab = value;
+    if (segment === "report-self-invest") state.ui.weeklySelfTab = value;
     if (segment === "invalid-detail") state.ui.invalidDetailTab = value;
     if (segment === "batch-summary") state.ui.batchSummaryTab = value;
     if (segment === "batch-acos-sort") state.ui.batchAcosSort = value;
@@ -2601,6 +2810,38 @@ function handleRootClick(event) {
 }
 
 function handleRootChange(event) {
+  const reportSelect = event.target.closest("[data-report-select]");
+  if (reportSelect) {
+    const name = reportSelect.dataset.reportSelect;
+    if (name === "type") {
+      state.ui.reportType = reportSelect.value;
+      state.ui.reportMonth = "";
+      state.ui.reportWeek = "";
+    }
+    if (name === "month") {
+      state.ui.reportMonth = reportSelect.value;
+      state.ui.reportWeek = "";
+    }
+    if (name === "week") state.ui.reportWeek = reportSelect.value;
+    state.ui.reportSelectionId = "";
+    renderCurrentPage();
+    return;
+  }
+
+  const reportFilterOption = event.target.closest("[data-report-filter-option]");
+  if (reportFilterOption) {
+    const kind = reportFilterOption.dataset.reportFilterOption;
+    const selected = kind === "owner" ? state.ui.reportOwnersDraft : state.ui.reportCategoriesDraft;
+    if (reportFilterOption.checked) selected.add(reportFilterOption.value);
+    else selected.delete(reportFilterOption.value);
+    const filter = reportFilterOption.closest(".report-category-filter");
+    const selection = filter?.querySelector(".report-category-filter__selection");
+    const report = ensureReportSelection().report;
+    const options = kind === "owner" ? reportOwnerData(report).owners : report.categories.map((category) => category.category);
+    if (selection && report) selection.innerHTML = reportSelectionMarkup(options, selected, kind === "owner" ? "未选择运营组长" : "未选择品类");
+    return;
+  }
+
   const checkbox = event.target.closest('.multi-select input[type="checkbox"]');
   if (!checkbox) return;
   const select = checkbox.closest(".multi-select");
@@ -2622,6 +2863,13 @@ function handleRootChange(event) {
 }
 
 function handleRootInput(event) {
+  if (event.target.matches("[data-report-filter-search]")) {
+    const keyword = event.target.value.trim().toLowerCase();
+    event.target.closest(".report-category-filter")?.querySelectorAll("[data-report-filter-row]").forEach((row) => {
+      row.hidden = keyword && !row.textContent.toLowerCase().includes(keyword);
+    });
+    return;
+  }
   if (event.target.matches("[data-invalid-detail-keyword]")) {
     state.invalidDetailSearch.draft = event.target.value;
     return;
@@ -2749,5 +2997,10 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest(".multi-select")) closeMultiSelects();
 });
 document.getElementById("retry-button").addEventListener("click", loadData);
+let reportTableResizeTimer;
+window.addEventListener("resize", () => {
+  window.clearTimeout(reportTableResizeTimer);
+  reportTableResizeTimer = window.setTimeout(syncReportTableWidths, 80);
+}, { passive: true });
 
 loadData();
