@@ -16,9 +16,7 @@ const PAGE_CONFIG = {
   weekly_review: {
     title: "亚马逊周报月报",
     sections: [
-      ["report-overview", "总体"],
       ["report-attention", "需关注"],
-      ["report-coupon", "coupon和促销需关注"],
       ["report-required", "指定"],
       ["report-self-invest", "自投"],
     ],
@@ -30,6 +28,7 @@ const PAGE_CONFIG = {
       ["inefficient-analysis", "低效广告分析"],
       ["saving-analysis", "节约花费视角"],
       ["invalid-detail", "广告活动明细"],
+      ["small-brand-contraction", "小品牌广告收缩方案"],
     ],
   },
   lingxing_rules: {
@@ -47,6 +46,7 @@ const PAGE_CONFIG = {
       ["batch-scale", "批量投放规模"],
       ["batch-coverage", "活动覆盖率"],
       ["batch-acos", "批量 ACOS 对比"],
+      ["batch-low-efficiency", "低效批量广告"],
       ["batch-summary", "批量投放汇总明细"],
       ["batch-operation-detail", "批量投放批次查询"],
       ["batch-demand-stats", "上周需求统计"],
@@ -64,6 +64,11 @@ const state = {
   searchDraft: {},
   searchApplied: {},
   detailFilters: {},
+  sharedFilters: {
+    owner: { all: true, values: new Set() },
+    category: { all: true, values: new Set() },
+  },
+  sharedFilterDirty: new Set(),
   invalidDetailSearch: {
     draft: "",
     applied: "",
@@ -84,7 +89,7 @@ const state = {
   ui: {
     monthlyCategoryTab: "all",
     weeklySelfTab: "overall",
-    reportType: "weekly",
+    reportType: "monthly",
     reportMonth: "",
     reportWeek: "",
     reportSelectionId: "",
@@ -228,16 +233,16 @@ function formatChange(current, previous, format = "number", inverse = false) {
   return `<span class="delta ${className}">${arrow} ${deltaText} (${rateText})</span>`;
 }
 
-function kpiCard({ label, value, previous, valueType = "number", tone = "primary", inverse = false, note = "较上月", description = "" }) {
+function kpiCard({ label, value, previous, valueType = "number", tone = "primary", inverse = false, note = "较上月", description = "", comparisonMarkup = "" }) {
   let display = formatNumber(value, 2);
   if (valueType === "integer") display = formatNumber(value, 0);
   if (valueType === "currency") display = formatCurrency(value, true);
   if (valueType === "yuan") display = formatYuan(value);
   if (valueType === "percent") display = formatPercent(value, false, 2);
   if (valueType === "fractionPercent") display = formatPercent(value, true, 2);
-  const compare = previous === undefined || previous === null
+  const compare = comparisonMarkup || (previous === undefined || previous === null
     ? escapeHtml(note)
-    : `${note ? `${escapeHtml(note)} ` : ""}${formatChange(value, previous, valueType === "fractionPercent" ? "number" : valueType, inverse)}`;
+    : `${note ? `${escapeHtml(note)} ` : ""}${formatChange(value, previous, valueType === "fractionPercent" ? "number" : valueType, inverse)}`);
   return `
     <article class="kpi-card" data-tone="${escapeHtml(tone)}">
       <p class="kpi-card__label">${escapeHtml(label)}</p>
@@ -245,6 +250,14 @@ function kpiCard({ label, value, previous, valueType = "number", tone = "primary
       <p class="kpi-card__value">${display}</p>
       <p class="kpi-card__compare">${compare}</p>
     </article>`;
+}
+
+function fractionDeltaPercentOnly(current, previous, inverse = false) {
+  const delta = asNumber(current) - asNumber(previous);
+  const favorable = inverse ? delta < 0 : delta > 0;
+  const className = delta === 0 ? "is-neutral" : favorable ? "is-good" : "is-bad";
+  const arrow = delta > 0 ? "↑" : delta < 0 ? "↓" : "→";
+  return `<span class="delta ${className}">${arrow} ${formatNumber(Math.abs(delta), 2)}%</span>`;
 }
 
 function detailMetricCard(label, value, valueType = "number", note = "当前筛选明细") {
@@ -545,7 +558,9 @@ function reportTable(table, tone = "current") {
   if (!headers.length || !rows.length) return emptyState("该区域暂无表格数据");
   const isDetail = headers.includes("日期范围");
   const isComparison = !isDetail && headers.some((header) => String(header).includes("变化") || String(header).includes("环比"));
-  const indexedHeaders = headers.map((header, index) => ({ header, index }));
+  const indexedHeaders = headers
+    .map((header, index) => ({ header, index }))
+    .filter(({ header }) => tone === "period" || !/coupon|促销/i.test(String(header || "")));
   const displayHeaders = isDetail
     ? [
       ...indexedHeaders.filter(({ header }) => !REPORT_DETAIL_TRAILING_COLUMNS.includes(header)),
@@ -568,6 +583,13 @@ function reportTable(table, tone = "current") {
   </table></div>`;
 }
 
+function reportConclusionText(value) {
+  return String(value || "")
+    .replace(/[，,]?coupon和促销费用[^；。。]*[；;]coupon和促销占比[^，,。。]*(?=[，,。。]|$)/gi, "")
+    .replace(/，。/g, "。")
+    .trim();
+}
+
 function reportOptions(reports, key, labelKey) {
   const seen = new Set();
   return reports.filter((report) => {
@@ -580,23 +602,26 @@ function reportOptions(reports, key, labelKey) {
 
 function ensureReportSelection() {
   const reports = Array.isArray(state.weeklyReport?.reports) ? state.weeklyReport.reports : [];
-  const availableTypes = [...new Set(reports.map((report) => report.report_type))];
-  if (!availableTypes.includes(state.ui.reportType)) state.ui.reportType = availableTypes[0] || "weekly";
+  const availableTypes = new Set(reports.map((report) => report.report_type));
+  if (!availableTypes.has(state.ui.reportType)) {
+    state.ui.reportType = availableTypes.has("monthly") ? "monthly" : reports[0]?.report_type || "";
+  }
   const typeReports = reports.filter((report) => report.report_type === state.ui.reportType);
   const months = reportOptions(typeReports, "month_key", "month_label");
   if (!months.some(([value]) => value === state.ui.reportMonth)) state.ui.reportMonth = months[0]?.[0] || "";
   const monthReports = typeReports.filter((report) => report.month_key === state.ui.reportMonth);
-  const weeks = reportOptions(monthReports, "week_label", "week_label");
-  if (state.ui.reportType === "weekly" && !weeks.some(([value]) => value === state.ui.reportWeek)) state.ui.reportWeek = weeks[0]?.[0] || "";
-  const report = monthReports.find((item) => state.ui.reportType === "monthly" || item.week_label === state.ui.reportWeek) || monthReports[0] || null;
+  const weeks = state.ui.reportType === "weekly"
+    ? reportOptions(monthReports, "week_label", "week_label")
+    : [];
+  if (state.ui.reportType === "weekly" && !weeks.some(([value]) => value === state.ui.reportWeek)) {
+    state.ui.reportWeek = weeks[0]?.[0] || "";
+  }
+  const report = state.ui.reportType === "weekly"
+    ? monthReports.find((item) => item.week_label === state.ui.reportWeek) || null
+    : monthReports[0] || null;
   if (report && state.ui.reportSelectionId !== report.id) {
-    const categories = report.categories.map((category) => category.category);
-    const owners = reportOwnerData(report).owners;
     state.ui.reportSelectionId = report.id;
-    state.ui.reportOwnersDraft = new Set(owners);
-    state.ui.reportOwnersApplied = new Set(owners);
-    state.ui.reportCategoriesDraft = new Set(categories);
-    state.ui.reportCategoriesApplied = new Set(categories);
+    syncReportFiltersFromShared(report);
     state.ui.weeklySelfTab = report.self_sections?.[0]?.key || "overall";
   }
   return { reports, typeReports, months, weeks, report };
@@ -608,13 +633,47 @@ function reportSelect(label, name, options, selected) {
   </select></label>`;
 }
 
-const REPORT_CATEGORY_ALIASES = {
+const SHARED_CATEGORY_ALIASES = {
   滤清器: "滤清",
   三元催化器: "三元催化",
   减震器: "减震",
   点火系统: "点火套件",
   散热器风扇: "散热器",
 };
+
+function sharedFilterValue(kind, value) {
+  const normalized = String(value || "").trim();
+  return kind === "category" ? (SHARED_CATEGORY_ALIASES[normalized] || normalized) : normalized;
+}
+
+function sharedSelection(options, kind) {
+  const shared = state.sharedFilters[kind];
+  if (shared.all) return new Set(options);
+  return new Set(options.filter((option) => shared.values.has(sharedFilterValue(kind, option))));
+}
+
+function updateSharedFilter(kind, selected, options) {
+  const allSelected = options.length > 0 && selected.size === options.length
+    && options.every((option) => selected.has(option));
+  state.sharedFilters[kind] = {
+    all: allSelected,
+    values: allSelected ? new Set() : new Set([...selected].map((value) => sharedFilterValue(kind, value))),
+  };
+  state.sharedFilterDirty.delete(kind);
+}
+
+function visibleReportCategories(report) {
+  return (report.categories || []).filter((category) => ["attention", "required"].includes(category.group));
+}
+
+function syncReportFiltersFromShared(report) {
+  const categories = visibleReportCategories(report).map((category) => category.category);
+  const owners = reportOwnerData(report).owners;
+  state.ui.reportOwnersDraft = sharedSelection(owners, "owner");
+  state.ui.reportOwnersApplied = cloneSet(state.ui.reportOwnersDraft);
+  state.ui.reportCategoriesDraft = sharedSelection(categories, "category");
+  state.ui.reportCategoriesApplied = cloneSet(state.ui.reportCategoriesDraft);
+}
 
 function reportOwnerData(report) {
   const sourceRows = state.data?.monthly_review?.category_overview || [];
@@ -628,8 +687,8 @@ function reportOwnerData(report) {
   });
   const categoryOwners = new Map();
   const owners = [];
-  (report.categories || []).forEach(({ category }) => {
-    const lookupCategory = REPORT_CATEGORY_ALIASES[category] || category;
+  visibleReportCategories(report).forEach(({ category }) => {
+    const lookupCategory = SHARED_CATEGORY_ALIASES[category] || category;
     const matchedOwners = [...(sourceMap.get(lookupCategory) || [])];
     const resolvedOwners = matchedOwners.length ? matchedOwners : ["未匹配运营组长"];
     categoryOwners.set(category, new Set(resolvedOwners));
@@ -650,7 +709,7 @@ function reportSelectionMarkup(options, selected, emptyLabel) {
 
 function reportMultiFilter(report, kind) {
   const isOwner = kind === "owner";
-  const options = isOwner ? reportOwnerData(report).owners : (report.categories || []).map((category) => category.category);
+  const options = isOwner ? reportOwnerData(report).owners : visibleReportCategories(report).map((category) => category.category);
   const applied = isOwner ? state.ui.reportOwnersApplied : state.ui.reportCategoriesApplied;
   const draft = isOwner ? state.ui.reportOwnersDraft : state.ui.reportCategoriesDraft;
   const label = isOwner ? "运营组长" : "品类";
@@ -671,7 +730,7 @@ function reportCategoryBlock(category) {
     <div class="report-category-block__title"><strong>${escapeHtml(category.category)}</strong><span>${escapeHtml(category.status_label || category.group_label)}</span></div>
     ${reportTable(category.compare)}
     ${reportTable(category.period_data, "period")}
-    <div class="report-conclusion"><strong>分析结论</strong><p>${escapeHtml(category.conclusion || "暂无分析结论")}</p></div>
+    <div class="report-conclusion"><strong>分析结论</strong><p>${escapeHtml(reportConclusionText(category.conclusion) || "暂无分析结论")}</p></div>
   </article>`;
 }
 
@@ -693,46 +752,64 @@ function reportCategorySection(report, group, id, title) {
   </section>`;
 }
 
+function reportDisplaySelfSections(report) {
+  const sectionsByKey = new Map();
+  (report.self_sections || []).forEach((section) => {
+    if (report.report_type === "weekly" && sectionsByKey.has(section.key)) return;
+    sectionsByKey.set(section.key, section);
+  });
+  return [...sectionsByKey.values()].map((section) => {
+    if (section.key !== "sb") return section;
+    const headers = section.table?.headers || [];
+    const subTagIndex = headers.indexOf("子标签");
+    if (subTagIndex < 0) return section;
+    return {
+      ...section,
+      table: {
+        ...section.table,
+        rows: (section.table.rows || []).filter((row) => !["SB-PT", "SB-KAX"].includes(String(row[subTagIndex] || "").trim())),
+      },
+    };
+  });
+}
+
 function renderWeekly() {
   if (!state.weeklyReport) {
     const detail = state.weeklyLoadError ? `（${state.weeklyLoadError}）` : "";
-    root.innerHTML = emptyState(`尚未读取到周报月报 JSON ${detail}`);
+    root.innerHTML = emptyState(`尚未读取到月报 JSON ${detail}`);
     return;
   }
-  const { months, weeks, report } = ensureReportSelection();
+  const { reports, months, weeks, report } = ensureReportSelection();
   if (!report) {
-    root.innerHTML = emptyState("data 文件夹中还没有可展示的周报或月报");
+    root.innerHTML = emptyState("data 文件夹中还没有可展示的月报");
     return;
   }
-  const typeOptions = [
-    ["weekly", "周报"],
-    ["monthly", "月报"],
-  ].filter(([type]) => state.weeklyReport.reports.some((item) => item.report_type === type));
-  const activeSelf = report.self_sections.find((section) => section.key === state.ui.weeklySelfTab) || report.self_sections[0] || {};
-  const selfTabs = (report.self_sections || []).map((section) => [section.key, section.title]);
+  const selfSections = reportDisplaySelfSections(report);
+  const activeSelf = selfSections.find((section) => section.key === state.ui.weeklySelfTab) || selfSections[0] || {};
+  const selfTabs = selfSections.map((section) => [section.key, section.title]);
   const periodLabel = `${report.current_period} vs ${report.previous_period}`;
   const warningMarkup = (report.warnings || []).map((warning) => `<p class="report-warning">${escapeHtml(warning)}</p>`).join("");
 
+  const isWeekly = report.report_type === "weekly";
+  const typeOptions = [["monthly", "月报"], ["weekly", "周报"]]
+    .filter(([value]) => reports.some((item) => item.report_type === value));
+  const reportTitle = isWeekly ? "亚马逊广告周报" : "亚马逊广告月报";
+  const reportDescription = isWeekly
+    ? "展示本次周报中的运营调整需关注、指定品类与自投数据，非指定品类不展示。"
+    : "展示本次月报中的需关注、指定品类与自投数据，coupon 和促销异常中的指定品类仍归入“指定”。";
+
   root.innerHTML = `
-    ${introMarkup("亚马逊广告周报月报", "按 Excel 原有版式展示总体、关注品类和自投数据；报告与品类均可切换。", periodLabel, `JSON生成：${weeklyGeneratedLabel(state.weeklyReport.meta?.generated_at)}；来源：${report.source_file}`)}
-    <div class="report-filter-bar report-filter-bar--${state.ui.reportType}">
+    ${introMarkup(reportTitle, reportDescription, isWeekly ? `${report.month_label} ${report.week_label}` : report.month_label || periodLabel, `来源：${report.source_file}`)}
+    <div class="report-filter-bar ${isWeekly ? "" : "report-filter-bar--monthly"}">
       ${reportSelect("报告类型", "type", typeOptions, state.ui.reportType)}
       ${reportSelect("报告月份", "month", months, state.ui.reportMonth)}
-      ${state.ui.reportType === "weekly" ? reportSelect("报告周次", "week", weeks, state.ui.reportWeek) : ""}
+      ${isWeekly ? reportSelect("报告周次", "week", weeks, state.ui.reportWeek) : ""}
       ${reportMultiFilter(report, "owner")}
       ${reportMultiFilter(report, "category")}
       <div class="report-filter-actions"><button type="button" class="button button--primary" data-report-category-apply>查询</button><button type="button" class="button" data-report-category-reset>重置</button></div>
     </div>
     ${warningMarkup}
-    <section class="dashboard-section report-section" id="report-overview">
-      ${sectionHead("总体", report.subtitle, periodLabel)}
-      <p class="report-summary">${escapeHtml(report.overall?.summary || "")}</p>
-      ${reportTable(report.overall?.change)}
-      ${reportTable(report.overall?.rate)}
-      ${reportTable(report.overall?.period_data, "period")}
-    </section>
     ${reportCategorySection(report, "attention", "report-attention", "需关注")}
-    ${reportCategorySection(report, "coupon", "report-coupon", "coupon和促销需关注")}
     ${reportCategorySection(report, "required", "report-required", "指定")}
     <section class="dashboard-section report-section" id="report-self-invest">
       ${sectionHead("自投", "按 Excel 中的自投、优势引流、自动捡漏、SB、SD 板块切换。", `${activeSelf.table?.rows?.length || 0} 条`)}
@@ -753,6 +830,49 @@ function cloneSet(set) {
   return new Set([...set]);
 }
 
+const SHARED_FILTER_PAGES = new Set([
+  "monthly_review",
+  "invalid_low_efficiency",
+  "lingxing_rules",
+  "batch_launch",
+]);
+
+function applySharedFiltersToPage(pageId, configs) {
+  if (!SHARED_FILTER_PAGES.has(pageId) || !state.filterDraft[pageId]) return;
+  const ownerConfig = configs.find((config) => config.id === "owner");
+  if (ownerConfig) {
+    const owners = sharedSelection(unique(ownerConfig.options), "owner");
+    state.filterDraft[pageId].owner = cloneSet(owners);
+    state.filterApplied[pageId].owner = cloneSet(owners);
+  }
+  const categoryConfig = configs.find((config) => config.id === "category");
+  if (categoryConfig) {
+    const availableCategories = filterOptions(pageId, categoryConfig, true);
+    const categories = sharedSelection(availableCategories, "category");
+    state.filterDraft[pageId].category = cloneSet(categories);
+    state.filterApplied[pageId].category = cloneSet(categories);
+  }
+}
+
+function markSharedFilterDirty(pageId, filterId) {
+  if (!SHARED_FILTER_PAGES.has(pageId) || !["owner", "category"].includes(filterId)) return;
+  state.sharedFilterDirty.add(filterId);
+  if (filterId === "owner") state.sharedFilterDirty.add("category");
+}
+
+function syncSharedFiltersToDestination(pageId) {
+  if (pageId === "weekly_review") {
+    state.ui.reportSelectionId = "";
+    const report = ensureReportSelection().report;
+    if (report) syncReportFiltersFromShared(report);
+    return;
+  }
+  if (!SHARED_FILTER_PAGES.has(pageId)) return;
+  const configs = pageFilterConfigs(pageId);
+  initializeFilters(pageId, configs);
+  applySharedFiltersToPage(pageId, configs);
+}
+
 function initializeFilters(pageId, configs) {
   if (state.filterDraft[pageId]) return;
   state.filterDraft[pageId] = {};
@@ -762,6 +882,7 @@ function initializeFilters(pageId, configs) {
     state.filterDraft[pageId][config.id] = new Set(values);
     state.filterApplied[pageId][config.id] = new Set(values);
   });
+  applySharedFiltersToPage(pageId, configs);
   state.searchDraft[pageId] = "";
   state.searchApplied[pageId] = "";
 }
@@ -1286,8 +1407,8 @@ function segmentControl(id, options, active) {
 function tagMarkup(value) {
   const text = String(value ?? "-");
   let className = "";
-  if (["异常升高", "无效", "超预算", "广告活动超预算", "广告组合超预算"].includes(text)) className = "is-danger";
-  if (["触发偏低", "触发次数变化较大", "低效", "广告活动已暂停"].includes(text)) className = "is-warning";
+  if (["异常升高", "严重异常", "无效", "超预算", "广告活动超预算", "广告组合超预算"].includes(text)) className = "is-danger";
+  if (["异常", "触发偏低", "触发次数变化较大", "低效", "广告活动已暂停"].includes(text)) className = "is-warning";
   if (["正常", "投放中"].includes(text)) className = "is-good";
   return `<span class="tag ${className}">${escapeHtml(text)}</span>`;
 }
@@ -1832,10 +1953,10 @@ function renderInvalid() {
     <div class="kpi-grid kpi-grid--six">
       ${kpiCard({ label: "无效广告活动", value: invalidRows.length, valueType: "integer", tone: "red", note: `花费 ${formatCurrency(invalidSpend)}` })}
       ${kpiCard({ label: "低效广告活动", value: inefficientRows.length, valueType: "integer", tone: "orange", note: `花费 ${formatCurrency(inefficientSpend)}` })}
-      ${kpiCard({ label: "节约广告花费", value: saving, valueType: "currency", tone: "green", note: "按品类与运营组长筛选" })}
-      ${kpiCard({ label: "节约占总花费比例", value: safeDivide(saving, totalSpend) * 100, valueType: "percent", tone: "teal", note: `本月总花费 ${formatCurrency(totalSpend, true)}` })}
+      ${kpiCard({ label: "已节约广告花费", value: saving, valueType: "currency", tone: "green", note: "按品类与运营组长筛选" })}
+      ${kpiCard({ label: "已节约占总花费比例", value: safeDivide(saving, totalSpend) * 100, valueType: "percent", tone: "teal", note: `本月总花费 ${formatCurrency(totalSpend, true)}` })}
       ${kpiCard({ label: "关停/归档活动", value: data.totals["本月关停/归档广告活动数量"], valueType: "integer", tone: "primary", note: "本月汇总" })}
-      ${kpiCard({ label: "无效与低效花费", value: invalidSpend + inefficientSpend, valueType: "currency", tone: "orange", note: "当前筛选范围" })}
+      ${kpiCard({ label: "预计节约广告花费", value: invalidSpend + inefficientSpend, valueType: "currency", tone: "orange", note: "若关停当前无效和低效广告" })}
     </div>
     ${filterMarkup("invalid_low_efficiency", configs, null, `${invalidRows.length + inefficientRows.length} 条活动`)}
     <section class="dashboard-section" id="invalid-analysis">
@@ -1896,6 +2017,24 @@ function renderInvalid() {
         ${segmentControl("invalid-detail", [["all", "全部"], ["invalid", "无效"], ["inefficient", "低效"]], state.ui.invalidDetailTab)}
       </div>
       ${tableMarkup("invalid-detail-table", detailRows, detailColumns, 50)}
+    </section>
+    <section class="dashboard-section" id="small-brand-contraction">
+      ${sectionHead("小品牌广告收缩方案", "建立长期、自动化的小品牌广告监控与分批关停机制。", "方案说明")}
+      <div class="strategy-brief">
+        <div class="strategy-brief__section">
+          <h3>一、项目背景</h3>
+          <p>鉴于部分小品牌品类广告投产表现不佳，且其广告活动与主力品牌混投严重，人工逐一识别并关停的效率低下、可操作性差。结合公司未来将逐步削减小品牌广告预算的战略方向，亟需建立一套长效、自动化的监控与关停机制。</p>
+        </div>
+        <div class="strategy-brief__section">
+          <h3>二、解决方案与执行路径</h3>
+          <p>为系统性地解决此问题，我们将从工具开发、数据监控和运营规则三个维度同步推进：</p>
+          <ol class="strategy-steps">
+            <li><strong>工具端赋能（系统开发）</strong><p>已协同领星系统提出功能需求，计划新增“ASIN标签化管理”及“批量管控”模块。该功能上线后，将支持按品牌维度进行一键筛选与批量关停，从根本上解决人工操作难题。目前需求已提交，正等待对方确认开发排期。</p></li>
+            <li><strong>数据端监控（临时过渡方案）</strong><p>在系统功能上线前，将以周为周期，调取数据库内在投的小品牌ASIN数据，进行人工复核与监控管理，并同步更新至内部管理看板，确保数据的实时性与可追溯性。</p></li>
+            <li><strong>运营端规则（长效约束机制）</strong><p>明确运营规范，即日起原则上不再为任何小品牌ASIN新增广告投放。同时，由中台牵头，统一定义各品类下的“小品牌”范畴（核心标准为：除PT、KAX两大品牌外，其余均视为小品牌），并以此为依据，制定分阶段、分批次的逐步关停计划。</p></li>
+          </ol>
+        </div>
+      </div>
     </section>`;
 }
 
@@ -1962,7 +2101,7 @@ function ruleQueryFilterConfig(data) {
     { id: "owner", label: "运营组长", options: filters.运营组长 || [] },
     { id: "category", label: "品类", options: filters.品类 || [], linkedTo: "owner", ownerCategoryMap },
     { id: "adType", label: "广告类型", options: filters.广告类型 || [] },
-    { id: "ruleCategory", label: "规则类别", options: filters.规则类别 || [] },
+    { id: "ruleCategory", label: "规则组类别", options: filters.规则组类别 || [] },
   ];
 }
 
@@ -1971,10 +2110,10 @@ function filteredRuleQueryRows(data) {
     owner: "运营组长",
     category: "品类",
     adType: "广告类型",
-    ruleCategory: "规则类别",
+    ruleCategory: "规则组类别",
   })).sort((a, b) => String(a.品类).localeCompare(String(b.品类), "zh-CN")
     || String(a.广告类型).localeCompare(String(b.广告类型), "zh-CN")
-    || String(a.规则类别).localeCompare(String(b.规则类别), "zh-CN"));
+    || String(a.规则组类别).localeCompare(String(b.规则组类别), "zh-CN"));
 }
 
 function renderLingxing() {
@@ -2067,7 +2206,7 @@ function renderLingxing() {
     { field: "运营组长", label: "运营组长" },
     { field: "广告组负责人", label: "广告组负责人" },
     { field: "规则", label: "规则", long: true },
-    { field: "规则类别", label: "规则类别" },
+    { field: "规则组类别", label: "规则组类别" },
     { field: "针对标签", label: "针对标签（默认全部）", long: true, render: (v) => v ? escapeHtml(v) : "默认全部" },
     { field: "覆盖周期", label: "覆盖周期" },
     { field: "通知邮箱", label: "通知邮箱", long: true },
@@ -2170,7 +2309,7 @@ function renderLingxing() {
         ${detailMetricCard("订单", detailSummary.orders, "integer")}
         ${detailMetricCard("销售额", detailSummary.sales, "currency")}
       </div>
-      ${tableMarkup("lingxing-detail-table", detailRows, detailColumns, 50)}
+      ${tableMarkup("lingxing-detail-table", detailRows, detailColumns, 7)}
       <div class="method-note">花费、订单与销售额为当前筛选触发记录的取数窗口字段汇总，不等同整月广告表现。来货自动重开和低库存产品暂停已移至专项规则视图。</div>
     </section>
     <section class="dashboard-section" id="rule-query">
@@ -2184,7 +2323,7 @@ function renderLingxing() {
         },
       )}
       ${filterMarkup("lingxing_rule_query", ruleQueryConfigs, null, `${ruleQueryRows.length} 条规则`)}
-      ${tableMarkup("lingxing-rule-query-table", ruleQueryRows, ruleQueryColumns, 50)}
+      ${tableMarkup("lingxing-rule-query-table", ruleQueryRows, ruleQueryColumns, 5)}
       <div class="method-note">数据源：${escapeHtml(data.rule_query?.source || "未找到规则表")}；规则配置与规则触发记录为独立数据源，表内空白字段以横杠显示。</div>
     </section>`;
 }
@@ -2249,6 +2388,7 @@ function batchAggregate(rows) {
     sales,
     totalSpend,
     totalSales,
+    spendShare: totalSpend > 0 ? spend / totalSpend : null,
     acos: spend > 0 && sales > 0 ? spend / sales : null,
     categoryAcos: totalSpend > 0 && totalSales > 0 ? totalSpend / totalSales : null,
     salesContribution: totalSales > 0 ? sales / totalSales : null,
@@ -2261,12 +2401,15 @@ function batchSummaryRowsToRaw(rows) {
     const batchAcos = asNumber(row.批量ACOS);
     const categoryAcos = asNumber(row.品类平均ACOS);
     const salesContribution = asNumber(row.批量销售贡献率);
+    const spendContribution = asNumber(row.批量活动花费占比);
     const batchSales = batchSpend > 0 && batchAcos > 0 ? batchSpend / batchAcos : 0;
     const totalSales = batchSales > 0 && salesContribution > 0 ? batchSales / salesContribution : 0;
     return {
       ...row,
       批量销售额: batchSales,
-      品类总花费: totalSales > 0 && categoryAcos > 0 ? totalSales * categoryAcos : 0,
+      品类总花费: batchSpend > 0 && spendContribution > 0
+        ? batchSpend / spendContribution
+        : totalSales > 0 && categoryAcos > 0 ? totalSales * categoryAcos : 0,
       品类总销售额: totalSales,
     };
   });
@@ -2295,6 +2438,7 @@ function batchRowsByDimension(rows, dimensionField, options = {}) {
     return {
       ...row,
       活动覆盖率: aggregate.coverage,
+      批量活动花费占比: aggregate.spendShare,
       批量ACOS: aggregate.acos,
       品类平均ACOS: aggregate.categoryAcos,
       ACOS差异: aggregate.acos !== null && aggregate.categoryAcos !== null ? aggregate.categoryAcos - aggregate.acos : null,
@@ -2321,6 +2465,10 @@ function renderBatch() {
     && (categoryAllSelected || categorySet.has(row.品类))
     && (!teamSet || teamSet.has(row.团队))
     && ownerSet.has(row.品类负责人));
+  const activityCrossRows = (data.activity_summary_cross || data.summary_cross || []).filter((row) => monthSet.has(String(row.月份))
+    && (categoryAllSelected || categorySet.has(row.品类))
+    && (!teamSet || teamSet.has(row.团队))
+    && ownerSet.has(row.品类负责人));
   const monthlyCategoryRows = batchRowsByDimension(crossRows, "品类");
   const eligibleCategoryMonths = new Set(monthlyCategoryRows
     .filter((row) => row.批量广告花费 > 0)
@@ -2336,9 +2484,17 @@ function renderBatch() {
   const latestMonth = selectedMonths.at(-1);
   const previousMonth = selectedMonths.length > 1 ? selectedMonths.at(-2) : null;
   const currentRows = monthlyCategoryRows.filter((row) => String(row.月份) === latestMonth && row.批量广告花费 > 0);
-  const current = batchAggregate(crossRows.filter((row) => String(row.月份) === latestMonth));
-  const previous = previousMonth ? batchAggregate(crossRows.filter((row) => String(row.月份) === previousMonth)) : null;
-  const coverageRows = [...categoryRows].filter((row) => row.全部活动数量 > 0).sort((a, b) => b.活动覆盖率 - a.活动覆盖率);
+  const currentFinancial = batchAggregate(crossRows.filter((row) => String(row.月份) === latestMonth));
+  const currentActivity = batchAggregate(activityCrossRows.filter((row) => String(row.月份) === latestMonth));
+  const current = { ...currentFinancial, batchCount: currentActivity.batchCount, allCount: currentActivity.allCount, coverage: currentActivity.coverage };
+  const previousFinancial = previousMonth ? batchAggregate(crossRows.filter((row) => String(row.月份) === previousMonth)) : null;
+  const previousActivity = previousMonth ? batchAggregate(activityCrossRows.filter((row) => String(row.月份) === previousMonth)) : null;
+  const previous = previousFinancial && previousActivity
+    ? { ...previousFinancial, batchCount: previousActivity.batchCount, allCount: previousActivity.allCount, coverage: previousActivity.coverage }
+    : previousFinancial;
+  const coverageRows = batchRowsByDimension(activityCrossRows, "品类", { combineMonths: true, periodLabel })
+    .filter((row) => row.全部活动数量 > 0)
+    .sort((a, b) => b.活动覆盖率 - a.活动覆盖率);
   const coverageMax = niceFractionMax(coverageRows.map((row) => row.活动覆盖率));
   const acosRows = categoryRows.map((row) => ({
     ...row,
@@ -2350,8 +2506,40 @@ function renderBatch() {
   });
   const acosMax = niceFractionMax(acosRows.flatMap((row) => [row.批量ACOS, row.品类平均ACOS].filter((value) => value !== null && value > 0)));
 
+  const lowEfficiencyRows = currentRows
+    .map((row) => {
+      const acosGap = asNumber(row.批量ACOS) - asNumber(row.品类平均ACOS);
+      const contributionGap = asNumber(row.批量活动花费占比) - asNumber(row.批量销售贡献率);
+      const severity = acosGap >= 0.08 ? "严重异常" : "异常";
+      return {
+        ...row,
+        异常级别: severity,
+        投入产出差异: contributionGap,
+        低效ACOS差异: acosGap,
+        处理建议: severity === "严重异常"
+          ? "停止扩大投放；重点优化高花费低转化活动，必要时关闭批量投放并单独排查。"
+          : "暂停扩大投放；优化现有活动的关键词、竞价和低转化目标，复查后再恢复扩量。",
+      };
+    })
+    .filter((row) => row.批量广告花费 >= 100
+      && row.低效ACOS差异 >= 0.05
+      && row.投入产出差异 > 0)
+    .sort((a, b) => b.低效ACOS差异 - a.低效ACOS差异);
+  const lowEfficiencyColumns = [
+    { field: "异常级别", label: "异常级别", render: (v) => tagMarkup(v) },
+    { field: "维度", label: "品类" },
+    { field: "批量广告花费", label: "批量花费", numeric: true, render: (v) => formatCurrency(v) },
+    { field: "批量活动花费占比", label: "花费占比", numeric: true, render: (v) => formatPercent(v, true) },
+    { field: "批量销售贡献率", label: "销售贡献率", numeric: true, render: (v) => formatPercent(v, true) },
+    { field: "投入产出差异", label: "花费占比 - 销售贡献率", numeric: true, render: (v) => formatSignedFractionPercent(v) },
+    { field: "批量ACOS", label: "批量 ACoS", numeric: true, render: (v) => formatPercent(v, true) },
+    { field: "品类平均ACOS", label: "品类平均 ACoS", numeric: true, render: (v) => formatPercent(v, true) },
+    { field: "低效ACOS差异", label: "批量 - 品类平均", numeric: true, render: (v) => formatSignedFractionPercent(v) },
+    { field: "处理建议", label: "处理建议", wrap: true },
+  ];
+
   const monthScale = selectedMonths.map((month) => {
-    const aggregate = batchAggregate(crossRows.filter((row) => String(row.月份) === month));
+    const aggregate = batchAggregate(activityCrossRows.filter((row) => String(row.月份) === month));
     const monthText = String(month);
     const label = /^\d{6}$/.test(monthText) ? `${Number(monthText.slice(4, 6))}月` : monthText;
     return { label, value: aggregate.batchCount };
@@ -2389,6 +2577,7 @@ function renderBatch() {
     { field: "全部活动数量", label: "全部活动数量", numeric: true, render: (v) => formatNumber(v, 0) },
     { field: "活动覆盖率", label: "活动覆盖率", numeric: true, render: (v) => formatPercent(v, true) },
     { field: "批量广告花费", label: "批量广告花费", numeric: true, render: (v) => formatCurrency(v) },
+    { field: "批量活动花费占比", label: "批量活动花费占比", numeric: true, render: (v) => v === null ? "-" : formatPercent(v, true) },
     { field: "批量ACOS", label: "批量 ACoS", numeric: true, render: (v) => v === null || asNumber(v) <= 0 ? "-" : formatPercent(v, true) },
     { field: "品类平均ACOS", label: "品类平均 ACoS", numeric: true, render: (v) => v === null || asNumber(v) <= 0 ? "-" : formatPercent(v, true) },
     { field: "ACOS差异", label: "品类平均 - 批量", numeric: true, render: (v) => v === null ? "-" : formatSignedFractionPercent(v) },
@@ -2410,6 +2599,17 @@ function renderBatch() {
       ${kpiCard({ label: "批量广告活动数量", value: current.batchCount, previous: previous?.batchCount, valueType: "integer", tone: "primary", note: latestMonth ? `${String(latestMonth).slice(0, 4)}年${String(latestMonth).slice(4)}月` : "当前筛选" })}
       ${kpiCard({ label: "活动覆盖率", value: current.coverage, previous: previous?.coverage, valueType: "fractionPercent", tone: "teal", note: "批量活动数 / 全部活动数" })}
       ${kpiCard({ label: "批量广告花费", value: current.spend, previous: previous?.spend, valueType: "currency", tone: "orange", inverse: true })}
+      ${kpiCard({
+        label: "批量活动花费占比",
+        value: current.spendShare,
+        previous: previous?.spendShare,
+        valueType: "fractionPercent",
+        tone: "teal",
+        note: "批量广告花费 / 品类总花费",
+        comparisonMarkup: previous
+          ? `批量广告花费 / 品类总花费 ${fractionDeltaPercentOnly(current.spendShare, previous.spendShare)}`
+          : "批量广告花费 / 品类总花费",
+      })}
       ${kpiCard({ label: "批量 ACoS", value: current.acos, previous: previous?.acos, valueType: "fractionPercent", tone: "red", inverse: true })}
       ${kpiCard({ label: "当前覆盖品类", value: currentRows.length, valueType: "integer", tone: "green", note: "当前月份且批量花费大于 0" })}
     </div>
@@ -2435,6 +2635,23 @@ function renderBatch() {
         </div>
         ${dumbbellChart(acosRows.map((row) => ({ label: row.维度, previous: row.批量ACOS, current: row.品类平均ACOS, difference: row.ACoS差值 })), { min: 0, max: acosMax, showAxis: true, hideNonPositive: true, formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0), differenceFormatter: formatSignedFractionPercent })}
       </div>
+    </section>
+    <section class="dashboard-section" id="batch-low-efficiency">
+      ${sectionHead("低效批量广告", "识别投入产出失衡且批量 ACoS 明显高于品类平均的品类，并给出对应处理方式。", `${lowEfficiencyRows.length} 个待处理品类`)}
+      <div class="batch-treatment-grid">
+        <article class="batch-treatment-card is-danger">
+          <div>${tagMarkup("严重异常")}</div>
+          <h4>ACoS 差异 ≥ 8 个百分点</h4>
+          <p>停止扩大投放；重点优化高花费、低转化活动。必要时关闭批量投放，并对品类进行单独排查。</p>
+        </article>
+        <article class="batch-treatment-card is-warning">
+          <div>${tagMarkup("异常")}</div>
+          <h4>ACoS 差异为 5–8 个百分点</h4>
+          <p>暂停扩大投放；优化现有活动的关键词、竞价和低转化目标，复查效果后再恢复扩量。</p>
+        </article>
+      </div>
+      <div class="method-note batch-low-efficiency-rule">进入清单需同时满足：当前月份批量花费 ≥ $100、批量 ACoS 高于品类平均至少 5 个百分点，且批量花费占比高于销售贡献率。差异口径统一为“批量 − 品类平均”。</div>
+      ${tableMarkup("batch-low-efficiency-table", lowEfficiencyRows, lowEfficiencyColumns, 20)}
     </section>
     <section class="dashboard-section" id="batch-summary">
       ${sectionHead("批量投放汇总明细", "按所选月份合并汇总；无批量花费的品类不展示。", `${summaryRows.length} 条`)}
@@ -2472,7 +2689,6 @@ function renderSubnav() {
     const report = ensureReportSelection().report;
     const groupBySection = {
       "report-attention": "attention",
-      "report-coupon": "coupon",
       "report-required": "required",
     };
     if (report) sections = sections.filter(([id]) => !groupBySection[id] || reportFilteredCategories(report, groupBySection[id]).length > 0);
@@ -2497,7 +2713,7 @@ function updateDataStatusForCurrentPage() {
   if (state.page === "weekly_review") {
     if (!state.weeklyReport) {
       dataStatus.className = "data-status is-error";
-      dataStatus.innerHTML = '<span class="status-dot"></span><span>周报数据未加载</span>';
+      dataStatus.innerHTML = '<span class="status-dot"></span><span>月报数据未加载</span>';
       return;
     }
     dataStatus.className = "data-status is-ready";
@@ -2634,6 +2850,15 @@ function applyFilters(pageId) {
   Object.entries(state.filterDraft[pageId]).forEach(([id, values]) => {
     state.filterApplied[pageId][id] = cloneSet(values);
   });
+  if (SHARED_FILTER_PAGES.has(pageId)) {
+    const configs = pageFilterConfigs(pageId);
+    ["owner", "category"].forEach((kind) => {
+      if (!state.sharedFilterDirty.has(kind)) return;
+      const config = configs.find((item) => item.id === kind);
+      if (!config) return;
+      updateSharedFilter(kind, selectedSet(pageId, kind), filterOptions(pageId, config));
+    });
+  }
   const search = document.getElementById(`${pageId}-search`);
   if (search) state.searchDraft[pageId] = search.value;
   state.searchApplied[pageId] = state.searchDraft[pageId] || "";
@@ -2652,6 +2877,12 @@ function resetFilters(pageId) {
     state.filterDraft[pageId][config.id] = cloneSet(all);
     state.filterApplied[pageId][config.id] = cloneSet(all);
   });
+  if (SHARED_FILTER_PAGES.has(pageId)) {
+    state.sharedFilters.owner = { all: true, values: new Set() };
+    state.sharedFilters.category = { all: true, values: new Set() };
+    state.sharedFilterDirty.delete("owner");
+    state.sharedFilterDirty.delete("category");
+  }
   state.searchDraft[pageId] = "";
   state.searchApplied[pageId] = "";
   if (pageId === "batch_operation_detail") {
@@ -2673,10 +2904,11 @@ function handleRootClick(event) {
     const filter = reportFilterAction.closest("[data-report-filter-kind]");
     const kind = filter?.dataset.reportFilterKind;
     if (!report || !kind) return;
-    const options = kind === "owner" ? reportOwnerData(report).owners : report.categories.map((category) => category.category);
+    const options = kind === "owner" ? reportOwnerData(report).owners : visibleReportCategories(report).map((category) => category.category);
     const selected = reportFilterAction.dataset.reportFilterAction === "all" ? new Set(options) : new Set();
     if (kind === "owner") state.ui.reportOwnersDraft = selected;
     else state.ui.reportCategoriesDraft = selected;
+    state.sharedFilterDirty.add(kind);
     filter.querySelectorAll("[data-report-filter-option]").forEach((checkbox) => { checkbox.checked = selected.has(checkbox.value); });
     filter.querySelector(".report-category-filter__selection").innerHTML = reportSelectionMarkup(options, selected, kind === "owner" ? "未选择运营组长" : "未选择品类");
     return;
@@ -2686,7 +2918,9 @@ function handleRootClick(event) {
   if (reportCategoryApply) {
     state.ui.reportOwnersApplied = cloneSet(state.ui.reportOwnersDraft);
     state.ui.reportCategoriesApplied = cloneSet(state.ui.reportCategoriesDraft);
-    renderCurrentPageAtSection("report-overview");
+    if (state.sharedFilterDirty.has("owner")) updateSharedFilter("owner", state.ui.reportOwnersApplied, reportOwnerData(ensureReportSelection().report).owners);
+    if (state.sharedFilterDirty.has("category")) updateSharedFilter("category", state.ui.reportCategoriesApplied, visibleReportCategories(ensureReportSelection().report).map((category) => category.category));
+    renderCurrentPageAtSection("report-attention");
     showToast(`已筛选 ${state.ui.reportOwnersApplied.size} 位运营组长、${state.ui.reportCategoriesApplied.size} 个品类`);
     return;
   }
@@ -2694,13 +2928,17 @@ function handleRootClick(event) {
   const reportCategoryReset = event.target.closest("[data-report-category-reset]");
   if (reportCategoryReset) {
     const report = ensureReportSelection().report;
-    const categories = new Set((report?.categories || []).map((category) => category.category));
+    const categories = new Set(report ? visibleReportCategories(report).map((category) => category.category) : []);
     const owners = new Set(report ? reportOwnerData(report).owners : []);
     state.ui.reportOwnersDraft = owners;
     state.ui.reportOwnersApplied = cloneSet(owners);
     state.ui.reportCategoriesDraft = categories;
     state.ui.reportCategoriesApplied = cloneSet(categories);
-    renderCurrentPageAtSection("report-overview");
+    state.sharedFilters.owner = { all: true, values: new Set() };
+    state.sharedFilters.category = { all: true, values: new Set() };
+    state.sharedFilterDirty.delete("owner");
+    state.sharedFilterDirty.delete("category");
+    renderCurrentPageAtSection("report-attention");
     showToast("运营组长和品类筛选已重置");
     return;
   }
@@ -2741,6 +2979,7 @@ function handleRootClick(event) {
       targetCheckboxes.forEach((box) => isAll ? values.add(box.value) : values.delete(box.value));
       state.filterDraft[pageId][select.dataset.filterId] = values;
       syncLinkedCategoryFilter(pageId, filterId);
+      markSharedFilterDirty(pageId, filterId);
     }
     checkboxes.forEach((box) => { box.checked = values.has(box.value); });
     updateMultiSelectButton(select);
@@ -2902,10 +3141,11 @@ function handleRootChange(event) {
     const selected = kind === "owner" ? state.ui.reportOwnersDraft : state.ui.reportCategoriesDraft;
     if (reportFilterOption.checked) selected.add(reportFilterOption.value);
     else selected.delete(reportFilterOption.value);
+    state.sharedFilterDirty.add(kind);
     const filter = reportFilterOption.closest(".report-category-filter");
     const selection = filter?.querySelector(".report-category-filter__selection");
     const report = ensureReportSelection().report;
-    const options = kind === "owner" ? reportOwnerData(report).owners : report.categories.map((category) => category.category);
+    const options = kind === "owner" ? reportOwnerData(report).owners : visibleReportCategories(report).map((category) => category.category);
     if (selection && report) selection.innerHTML = reportSelectionMarkup(options, selected, kind === "owner" ? "未选择运营组长" : "未选择品类");
     return;
   }
@@ -2926,6 +3166,7 @@ function handleRootChange(event) {
   const selected = state.filterDraft[pageId][filterId];
   if (checkbox.checked) selected.add(checkbox.value);
   else selected.delete(checkbox.value);
+  markSharedFilterDirty(pageId, filterId);
   updateMultiSelectButton(select);
   syncLinkedCategoryFilter(pageId, filterId);
 }
@@ -3048,6 +3289,7 @@ document.querySelector(".primary-nav").addEventListener("click", (event) => {
   const button = event.target.closest("[data-page]");
   if (!button || button.dataset.page === state.page || !state.data) return;
   state.page = button.dataset.page;
+  syncSharedFiltersToDestination(state.page);
   window.scrollTo({ top: 0, behavior: "smooth" });
   renderCurrentPage();
 });
