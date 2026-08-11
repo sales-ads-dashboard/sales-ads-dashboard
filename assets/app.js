@@ -1803,16 +1803,36 @@ function invalidFilterConfig(data) {
     { id: "owner", label: "运营组长", options: data.filters.运营组长 || [] },
     { id: "category", label: "品类", options: data.filters.品类 || [], linkedTo: "owner", ownerCategoryMap },
     { id: "adType", label: "广告类型", options: data.filters.广告类型 || [] },
-    { id: "service", label: "服务状态", options: data.filters.服务状态 || [] },
+    { id: "service", label: "服务状态", options: (data.filters.服务状态 || []).map(invalidServiceStatusLabel) },
   ];
 }
 
+function invalidServiceStatusLabel(value) {
+  const text = String(value ?? "").trim();
+  const labels = {
+    CAMPAIGN_STATUS_ENABLED: "投放中",
+    CAMPAIGN_OUT_OF_BUDGET: "预算耗尽",
+    CAMPAIGN_STATUS_PAUSED: "已暂停",
+    CAMPAIGN_STATUS_ARCHIVED: "已归档",
+    CAMPAIGN_STATUS_DISABLED: "已关闭",
+    CAMPAIGN_STATUS_CLOSED: "已关闭",
+    CAMPAIGN_STATUS_ENDED: "已结束",
+    ENABLED: "投放中",
+    PAUSED: "已暂停",
+    ARCHIVED: "已归档",
+  };
+  return labels[text] || text || "未标记";
+}
+
 function filterInvalidDetail(rows) {
-  return rows.filter((row) => rowMatches("invalid_low_efficiency", row, {
+  return rows.map((row) => ({
+    ...row,
+    服务状态显示: invalidServiceStatusLabel(row.服务状态),
+  })).filter((row) => rowMatches("invalid_low_efficiency", row, {
     category: "父标签",
     owner: "运营组长",
     adType: "类型",
-    service: "服务状态",
+    service: "服务状态显示",
   }));
 }
 
@@ -1840,7 +1860,7 @@ const INVALID_DETAIL_EXPORT_COLUMNS = [
   { field: "父标签", label: "品类" },
   { field: "运营组长", label: "运营组长" },
   { field: "类型", label: "广告类型" },
-  { field: "服务状态", label: "服务状态" },
+  { field: "服务状态显示", label: "服务状态" },
   { field: "投放天数", label: "投放天数", integer: true },
   { field: "广告活动", label: "广告活动" },
   { field: "花费", label: "花费", digits: 2 },
@@ -1937,7 +1957,7 @@ function renderInvalid() {
     { field: "父标签", label: "品类" },
     { field: "运营组长", label: "运营组长" },
     { field: "类型", label: "广告类型" },
-    { field: "服务状态", label: "服务状态", render: (v) => tagMarkup(v) },
+    { field: "服务状态显示", label: "服务状态", render: (v) => tagMarkup(v) },
     { field: "投放天数", label: "投放天数", numeric: true, render: (v) => `${formatNumber(v, 0)} 天` },
     { field: "广告活动", label: "广告活动", long: true },
     { field: "花费", label: "花费", numeric: true, render: (v) => formatCurrency(v) },
