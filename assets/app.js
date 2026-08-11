@@ -1857,6 +1857,7 @@ function selectedInvalidDetailRows(invalidRows, inefficientRows) {
 
 const INVALID_DETAIL_EXPORT_COLUMNS = [
   { field: "复盘标签", label: "复盘标签" },
+  { field: "店铺名称", label: "店铺" },
   { field: "父标签", label: "品类" },
   { field: "运营组长", label: "运营组长" },
   { field: "类型", label: "广告类型" },
@@ -1954,6 +1955,7 @@ function renderInvalid() {
 
   const detailColumns = [
     { field: "复盘标签", label: "复盘标签", render: (v) => tagMarkup(v) },
+    { field: "店铺名称", label: "店铺" },
     { field: "父标签", label: "品类" },
     { field: "运营组长", label: "运营组长" },
     { field: "类型", label: "广告类型" },
@@ -2631,7 +2633,6 @@ function renderBatch() {
           : "批量广告花费 / 品类总花费",
       })}
       ${kpiCard({ label: "批量 ACoS", value: current.acos, previous: previous?.acos, valueType: "fractionPercent", tone: "red", inverse: true })}
-      ${kpiCard({ label: "当前覆盖品类", value: currentRows.length, valueType: "integer", tone: "green", note: "当前月份且批量花费大于 0" })}
     </div>
     ${filterMarkup("batch_launch", configs, null, `${categoryRows.length} 个有批量花费的品类`)}
     <section class="dashboard-section" id="batch-scale">
@@ -2679,7 +2680,7 @@ function renderBatch() {
         <div></div>
         ${segmentControl("batch-summary", [["category", "按品类"], ["team", "按团队"], ["owner", "按运营组长"]], state.ui.batchSummaryTab)}
       </div>
-      ${tableMarkup("batch-summary-table", summaryRows, summaryColumns, 50)}
+      ${tableMarkup("batch-summary-table", summaryRows, summaryColumns, 10)}
       <div class="method-note">${teamConfig ? "月份、运营组长、品类与团队均会联动更新顶部 KPI、投放规模、覆盖率、ACoS 对比和汇总明细。" : "月份、运营组长与品类会联动更新顶部 KPI、投放规模、覆盖率、ACoS 对比和汇总明细；团队页签按月度汇总表独立展示。"}</div>
     </section>
     <section class="dashboard-section" id="batch-operation-detail">
@@ -2718,7 +2719,7 @@ function renderSubnav() {
       ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&amp;iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys" target="_blank" rel="noopener noreferrer">新增/修改规则需求收集表</a>`
       : "";
     const sbsdRequestLink = state.page === "monthly_review" && id === "monthly-sd-spend"
-      ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/i/nodes/lyQod3RxJK3plYjKcoo9bbeXJkb4Mw9r?corpId=dingff4418450cea3cc635c2f4657eb6378f&amp;utm_medium=im_card&amp;iframeQuery=utm_medium%3Dim_card%26utm_source%3Dim&amp;utm_scene=person_space&amp;utm_source=im" target="_blank" rel="noopener noreferrer">SBSD投放需求</a>`
+      ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/notable/share/form/v01AJdl659bwZ8Q7Oke_GNZbE2w_i7B4JaT?source=link" target="_blank" rel="noopener noreferrer">SBSD投放需求</a>`
       : "";
     return `<a class="subnav-link ${index === 0 ? "is-active" : ""}" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>
       ${lingxingRuleRequestLink}${sbsdRequestLink}`;
