@@ -28,7 +28,6 @@ const PAGE_CONFIG = {
       ["inefficient-analysis", "低效广告分析"],
       ["saving-analysis", "节约花费视角"],
       ["invalid-detail", "广告活动明细"],
-      ["small-brand-contraction", "小品牌广告收缩方案"],
     ],
   },
   lingxing_rules: {
@@ -1982,7 +1981,7 @@ function renderInvalid() {
     </div>
     ${filterMarkup("invalid_low_efficiency", configs, null, `${invalidRows.length + inefficientRows.length} 条活动`)}
     <section class="dashboard-section" id="invalid-analysis">
-      ${sectionHead("无效广告分析", "有花费无销售额的广告活动。", `${invalidRows.length} 条`)}
+      ${sectionHead("无效广告分析", "7月有花费无销售额的广告活动", `${invalidRows.length} 条`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>无效花费 Top 品类</h4></div></div>
@@ -1995,7 +1994,7 @@ function renderInvalid() {
       </div>
     </section>
     <section class="dashboard-section" id="inefficient-analysis">
-      ${sectionHead("低效广告分析", "有订单但 ACoS 偏高的广告活动。", `${inefficientRows.length} 条`)}
+      ${sectionHead("低效广告分析", "7月有订单且ACoS偏高的广告活动", `${inefficientRows.length} 条`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>低效花费 Top 品类</h4></div></div>
@@ -2008,7 +2007,7 @@ function renderInvalid() {
       </div>
     </section>
     <section class="dashboard-section" id="saving-analysis">
-      ${sectionHead("节约花费视角", "本区块不受广告类型与服务状态筛选影响。", `${filteredSavingsCategory.length} 个品类`)}
+      ${sectionHead("节约花费视角", "6月已关停广告活动的理论已节约花费", `${filteredSavingsCategory.length} 个品类`)}
       <div class="chart-grid">
         <div class="chart-panel">
           <div class="chart-title-row"><div><h4>节约花费 Top 品类</h4></div></div>
@@ -2040,7 +2039,7 @@ function renderInvalid() {
       </div>
       ${tableMarkup("invalid-detail-table", detailRows, detailColumns, 50)}
     </section>
-    <section class="dashboard-section" id="small-brand-contraction">
+    <section class="dashboard-section" id="small-brand-contraction" hidden>
       ${sectionHead("小品牌广告收缩方案", "建立长期、自动化的小品牌广告监控与分批关停机制。", "方案说明")}
       <div class="strategy-brief">
         <div class="strategy-brief__section">
