@@ -2721,7 +2721,11 @@ function updateDataStatusForCurrentPage() {
     dataStatus.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(weeklyGeneratedLabel(state.weeklyReport.meta?.generated_at))}</span>`;
     return;
   }
-  const generated = state.data?.meta?.generated_at ? new Date(state.data.meta.generated_at) : null;
+  const generatedCandidates = [state.data?.meta?.generated_at, state.weeklyReport?.meta?.generated_at]
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter((value) => !Number.isNaN(value.valueOf()));
+  const generated = generatedCandidates.sort((a, b) => b.valueOf() - a.valueOf())[0] || null;
   const freshness = generated && !Number.isNaN(generated.valueOf())
     ? `${generated.toLocaleDateString("zh-CN")} ${generated.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
     : "数据已就绪";
