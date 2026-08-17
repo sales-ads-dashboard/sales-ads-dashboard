@@ -1589,6 +1589,26 @@ button {
   grid-column: 1 / -1;
 }
 
+.sbsd-analysis-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.sbsd-analysis-grid:last-child {
+  margin-bottom: 0;
+}
+
+.sbsd-source-chart {
+  display: block;
+  width: 100%;
+  max-width: 580px;
+  height: auto;
+  margin: 0 auto;
+  background: #fff;
+}
+
 .chart-title-row {
   display: flex;
   flex-wrap: wrap;
@@ -1601,6 +1621,40 @@ button {
 .chart-title-row h4 {
   margin: 0;
   font-size: 15px;
+}
+
+/* SBSD两组源表按页面宽度紧凑展示，避免出现横向滚动。 */
+.sbsd-analysis-grid .table-shell,
+.sbsd-analysis-grid .table-scroll {
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.sbsd-analysis-grid .data-table {
+  min-width: 0;
+  table-layout: fixed;
+  font-size: 11px;
+}
+
+.sbsd-analysis-grid .data-table th,
+.sbsd-analysis-grid .data-table td {
+  padding: 7px 6px;
+  overflow-wrap: anywhere;
+}
+
+#sbsd-q3-table .data-table th:first-child,
+#sbsd-q3-table .data-table td:first-child {
+  width: 62%;
+}
+
+#sbsd-july-table .data-table th:first-child,
+#sbsd-july-table .data-table td:first-child {
+  width: 17%;
+}
+
+#sbsd-july-table .data-table th:not(:first-child),
+#sbsd-july-table .data-table td:not(:first-child) {
+  width: 16.6%;
 }
 
 .chart-title-row p {
@@ -2542,6 +2596,7 @@ button {
   .detail-filter-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .detail-filter-bar .filter-field { grid-column: auto; }
   .chart-grid { grid-template-columns: 1fr; }
+  .sbsd-analysis-grid { grid-template-columns: 1fr; }
   .batch-treatment-grid { grid-template-columns: 1fr; }
   .chart-panel--full { grid-column: auto; }
   .section-head { flex-direction: column; }
