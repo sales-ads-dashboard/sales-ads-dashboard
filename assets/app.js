@@ -10,7 +10,7 @@ const PAGE_CONFIG = {
       ["monthly-overview", "整体大盘"],
       ["monthly-category", "品类视角"],
       ["monthly-owner", "运营组长视角"],
-      ["monthly-sd-spend", "SBSD花费核对"],
+      ["monthly-sbsd-share", "SBSD广告活动占比分析"],
     ],
   },
   weekly_review: {
@@ -18,6 +18,7 @@ const PAGE_CONFIG = {
     sections: [
       ["report-attention", "需关注"],
       ["report-required", "指定"],
+      ["report-batch-monitor", "批量广告异常监测"],
       ["report-self-invest", "自投"],
     ],
   },
@@ -44,7 +45,6 @@ const PAGE_CONFIG = {
     sections: [
       ["batch-scale", "批量投放规模"],
       ["batch-coverage", "活动覆盖率"],
-      ["batch-acos", "批量 ACOS 对比"],
       ["batch-low-efficiency", "低效批量广告"],
       ["batch-summary", "批量投放汇总明细"],
       ["batch-operation-detail", "批量投放批次查询"],
@@ -98,7 +98,6 @@ const state = {
     reportCategoriesApplied: new Set(),
     invalidDetailTab: "all",
     batchSummaryTab: "category",
-    batchAcosSort: "desc",
   },
 };
 
@@ -751,6 +750,16 @@ function reportCategorySection(report, group, id, title) {
   </section>`;
 }
 
+function reportBatchMonitorSection(report) {
+  const monitor = report.batch_monitor;
+  const tables = monitor?.tables || [monitor?.change, monitor?.rate, monitor?.period_data].filter((table) => table?.rows?.length);
+  if (!tables.length) return "";
+  return `<section class="dashboard-section report-section" id="report-batch-monitor">
+    ${sectionHead("批量广告异常监测", monitor.title || "批量广告异常清单。", `${tables.reduce((count, table) => count + table.rows.length, 0)} 条`)}
+    ${tables.map((table) => reportTable(table, "period")).join("")}
+  </section>`;
+}
+
 function reportDisplaySelfSections(report) {
   const sectionsByKey = new Map();
   (report.self_sections || []).forEach((section) => {
@@ -810,6 +819,7 @@ function renderWeekly() {
     ${warningMarkup}
     ${reportCategorySection(report, "attention", "report-attention", "需关注")}
     ${reportCategorySection(report, "required", "report-required", "指定")}
+    ${isWeekly ? reportBatchMonitorSection(report) : ""}
     <section class="dashboard-section report-section" id="report-self-invest">
       ${sectionHead("自投", "按 Excel 中的自投、优势引流、自动捡漏、SB、SD 板块切换。", `${activeSelf.table?.rows?.length || 0} 条`)}
       ${segmentControl("report-self-invest", selfTabs, activeSelf.key)}
@@ -1494,18 +1504,6 @@ function monthlyFilterConfig(data) {
   ];
 }
 
-function sdSpendFilterConfig(data) {
-  const sdData = data.sd_spend || {};
-  return [
-    { id: "month", label: "月份", options: sdData.filters?.月份 || [] },
-    {
-      id: "owner",
-      label: "运营组长",
-      options: sdData.filters?.运营组长 || unique((sdData.rows || []).map((row) => row.运营组长).filter(Boolean)),
-    },
-  ];
-}
-
 function formatMonth(value) {
   const text = String(value || "");
   return /^\d{6}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4)}` : text;
@@ -1699,36 +1697,16 @@ function renderMonthly() {
     { field: "本月ACOS", label: "7月 ACoS", numeric: true, render: (v) => formatPercent(v) },
     { field: "花费环比", label: "花费环比", numeric: true, render: (v) => v === null ? "新增" : formatSignedFractionPercent(v) },
   ];
-  const sdData = data.sd_spend || { rows: [], filters: {} };
-  const sdConfigs = sdSpendFilterConfig(data);
-  initializeFilters("sd_spend", sdConfigs);
-  const sdRows = (sdData.rows || []).filter((row) => rowMatches("sd_spend", row, {
-    month: "时间月",
-    owner: "运营组长",
-  })).sort((a, b) => String(b.时间日).localeCompare(String(a.时间日)) || asNumber(b.金额) - asNumber(a.金额));
-  const sdOwnerSummary = aggregateBy(sdRows, "运营组长", {
-    金额: (row) => row.金额,
-  }).sort((a, b) => b.金额 - a.金额);
-  const sdKpis = [
-    kpiCard({ label: "SBSD总花费", value: sum(sdRows, "金额"), valueType: "yuan", tone: "primary", note: "当前筛选范围" }),
-    kpiCard({ label: "覆盖 SKU", value: unique(sdRows.map((row) => row.平台SKU)).length, valueType: "integer", tone: "teal", note: "平台SKU去重" }),
-    kpiCard({ label: "运营组长数", value: unique(sdRows.map((row) => row.运营组长)).length, valueType: "integer", tone: "orange", note: "当前筛选范围" }),
-    kpiCard({ label: "覆盖品类", value: unique(sdRows.map((row) => row.品类)).length, valueType: "integer", tone: "red", note: "品类去重" }),
-    kpiCard({ label: "覆盖日期数", value: unique(sdRows.map((row) => row.时间日).filter(Boolean)).length, valueType: "integer", tone: "green", note: "源文件提供日期的记录" }),
-  ].join("");
-  const sdColumns = [
-    { field: "时间月", label: "月份", render: (v) => escapeHtml(formatMonth(v)) },
-    { field: "时间日", label: "日期" },
-    { field: "店铺", label: "店铺" },
-    { field: "平台SKU", label: "平台 SKU", long: true },
-    { field: "渠道", label: "渠道" },
-    { field: "损益科目", label: "损益科目" },
-    { field: "广告活动", label: "广告活动", long: true },
-    { field: "金额", label: "SBSD花费", numeric: true, render: (v) => formatYuan(v) },
-    { field: "币种", label: "币种" },
-    { field: "运营", label: "运营" },
-    { field: "运营组长", label: "运营组长" },
-    { field: "品类", label: "品类", long: true },
+  const sbsdData = data.sbsd_share_analysis || { q3_allocation: { rows: [] }, july_spend: { rows: [] } };
+  const q3Rows = sbsdData.q3_allocation?.rows || [];
+  const julySpendRows = sbsdData.july_spend?.rows || [];
+  const sbsdJulyColumns = [
+    { field: "品类", label: "品类" },
+    { field: "求和:花费", label: "花费", numeric: true, render: (v) => formatCurrency(v) },
+    { field: "求和:广告销售额", label: "广告销售额", numeric: true, render: (v) => formatCurrency(v) },
+    { field: "求和:广告订单", label: "广告订单", numeric: true, render: (v) => formatNumber(v, 0) },
+    { field: "平均值:CVR", label: "CVR", numeric: true, render: (v) => formatPercent(v) },
+    { field: "平均值:ACoS", label: "ACoS", numeric: true, render: (v) => formatPercent(v) },
   ];
 
   root.innerHTML = `
@@ -1778,17 +1756,32 @@ function renderMonthly() {
       <div style="height:14px"></div>
       ${tableMarkup("monthly-owner-table", ownerRows, ownerColumns, 30)}
     </section>
-    <section class="dashboard-section" id="monthly-sd-spend">
-      ${sectionHead("SBSD花费核对", "统计损益科目为“广告花费-SD”和“广告花费-SB”的流水，用于按月份和运营组长核对花费。", `${sdRows.length} 条`)}
-      ${filterMarkup("sd_spend", sdConfigs, null, `${sdRows.length} 条SBSD花费记录`)}
-      <div class="kpi-grid">${sdRows.length ? sdKpis : emptyState()}</div>
-      <div class="chart-panel chart-panel--full">
-        <div class="chart-title-row"><div><h4>运营组长SBSD花费排名</h4><p>按当前筛选范围汇总，金额单位为人民币</p></div></div>
-        ${horizontalBarChart(sdOwnerSummary.slice(0, 15).map((row) => ({ label: row.运营组长, value: row.金额 })), { formatter: (v) => formatYuan(v) })}
+    <section class="dashboard-section" id="monthly-sbsd-share">
+      ${sectionHead("SBSD广告活动占比分析", "查看Q3预算分配策略与7月SDSB广告花费结构。左侧保留源表数据，右侧展示对应花费占比。", "数据源：SD广告花费占比分析.xlsx")}
+      <div class="sbsd-analysis-grid">
+        <div class="chart-panel">
+          <div class="chart-title-row"><div><h4>${escapeHtml(sbsdData.q3_allocation?.title || "SDSB的Q3预算分配策略")}</h4><p>按源表左侧数据保留品类与预估预算分配</p></div></div>
+          ${tableMarkup("sbsd-q3-table", q3Rows, [
+            { field: "品类", label: "市占排名降序（25年全年测算）" },
+            { field: "预估预算分配", label: "预估预算分配", numeric: true, render: (v) => formatPercent(v, true) },
+          ], 30)}
+          ${sbsdData.q3_allocation?.note ? `<div class="method-note">${escapeHtml(sbsdData.q3_allocation.note)}</div>` : ""}
+        </div>
+        <div class="chart-panel">
+          <div class="chart-title-row"><div><h4>Q3预算分配占比</h4><p>沿用源表饼图，包含品类与占比标注</p></div></div>
+          <img class="sbsd-source-chart" src="assets/sbsd-q3-allocation.png" alt="Q3预算分配占比饼图，包含品类与占比标注">
+        </div>
       </div>
-      <div style="height:14px"></div>
-      ${tableMarkup("monthly-sd-spend-table", sdRows, sdColumns, 50)}
-      <div class="method-note">数据源：SD花费提取.xlsx、7月SDSB广告花费提取.xlsx；固定筛选“损益科目 = 广告花费-SD/SB”。页面金额统一保留两位小数。</div>
+      <div class="sbsd-analysis-grid">
+        <div class="chart-panel">
+          <div class="chart-title-row"><div><h4>${escapeHtml(sbsdData.july_spend?.title || "7月月度花费占比")}</h4><p>展示源表第1—17行 A—F列区域（含总计）</p></div></div>
+          ${tableMarkup("sbsd-july-table", julySpendRows, sbsdJulyColumns, 20)}
+        </div>
+        <div class="chart-panel">
+          <div class="chart-title-row"><div><h4>7月SDSB花费占比</h4><p>沿用源表饼图，包含品类与占比标注</p></div></div>
+          <img class="sbsd-source-chart" src="assets/sbsd-july-spend.png" alt="7月SDSB花费占比饼图，包含品类与占比标注">
+        </div>
+      </div>
     </section>`;
 }
 
@@ -2209,6 +2202,7 @@ function renderLingxing() {
   const detailColumns = [
     { field: "月份", label: "月份" },
     { field: "触发日期", label: "触发日期" },
+    { field: "店铺", label: "店铺" },
     { field: "品类", label: "品类" },
     { field: "运营组长", label: "运营组长" },
     { field: "规则类别", label: "规则类别", render: (v) => tagMarkup(v) },
@@ -2305,6 +2299,7 @@ function renderLingxing() {
           ${tableMarkup("lingxing-special-table", specialActionRows, [
             { field: "月份", label: "月份" },
             { field: "触发日期", label: "触发日期" },
+            { field: "店铺", label: "店铺" },
             { field: "品类", label: "品类" },
             { field: "运营组长", label: "运营组长" },
             { field: "规则类别", label: "规则类别", render: (v) => tagMarkup(v) },
@@ -2462,7 +2457,7 @@ function batchRowsByDimension(rows, dimensionField, options = {}) {
       批量活动花费占比: aggregate.spendShare,
       批量ACOS: aggregate.acos,
       品类平均ACOS: aggregate.categoryAcos,
-      ACOS差异: aggregate.acos !== null && aggregate.categoryAcos !== null ? aggregate.categoryAcos - aggregate.acos : null,
+      ACOS差异: aggregate.acos !== null && aggregate.categoryAcos !== null ? aggregate.acos - aggregate.categoryAcos : null,
       批量销售贡献率: aggregate.salesContribution,
     };
   });
@@ -2517,16 +2512,6 @@ function renderBatch() {
     .filter((row) => row.全部活动数量 > 0)
     .sort((a, b) => b.活动覆盖率 - a.活动覆盖率);
   const coverageMax = niceFractionMax(coverageRows.map((row) => row.活动覆盖率));
-  const acosRows = categoryRows.map((row) => ({
-    ...row,
-    ACoS差值: row.批量ACOS !== null && row.品类平均ACOS !== null ? row.品类平均ACOS - row.批量ACOS : null,
-  })).sort((a, b) => {
-    if (a.ACoS差值 === null) return 1;
-    if (b.ACoS差值 === null) return -1;
-    return state.ui.batchAcosSort === "asc" ? a.ACoS差值 - b.ACoS差值 : b.ACoS差值 - a.ACoS差值;
-  });
-  const acosMax = niceFractionMax(acosRows.flatMap((row) => [row.批量ACOS, row.品类平均ACOS].filter((value) => value !== null && value > 0)));
-
   const lowEfficiencyRows = currentRows
     .map((row) => {
       const acosGap = asNumber(row.批量ACOS) - asNumber(row.品类平均ACOS);
@@ -2601,7 +2586,12 @@ function renderBatch() {
     { field: "批量活动花费占比", label: "批量活动花费占比", numeric: true, render: (v) => v === null ? "-" : formatPercent(v, true) },
     { field: "批量ACOS", label: "批量 ACoS", numeric: true, render: (v) => v === null || asNumber(v) <= 0 ? "-" : formatPercent(v, true) },
     { field: "品类平均ACOS", label: "品类平均 ACoS", numeric: true, render: (v) => v === null || asNumber(v) <= 0 ? "-" : formatPercent(v, true) },
-    { field: "ACOS差异", label: "品类平均 - 批量", numeric: true, render: (v) => v === null ? "-" : formatSignedFractionPercent(v) },
+    { field: "ACOS差异", label: "批量 ACoS - 品类平均", numeric: true, render: (v) => {
+      if (v === null || v === undefined) return "-";
+      const difference = asNumber(v);
+      const tone = difference > 0 ? "is-bad" : difference < 0 ? "is-good" : "is-neutral";
+      return `<span class="acos-difference ${tone}">${formatSignedFractionPercent(difference)}</span>`;
+    } },
     { field: "批量销售贡献率", label: "批量销售贡献率", numeric: true, render: (v) => v === null ? "-" : formatPercent(v, true) },
   ];
   if (state.ui.batchSummaryTab === "team") {
@@ -2644,16 +2634,6 @@ function renderBatch() {
       ${sectionHead("活动覆盖率", "数量覆盖率 = 所选月份批量活动数量 / 全部活动数量；多月选择时合并计算。", `${coverageRows.length} 个品类`)}
       <div class="chart-panel chart-panel--full">
         ${verticalCompareChart(coverageRows.map((row) => ({ label: row.维度, previous: 0, current: row.活动覆盖率 })), { previousVisible: false, currentVisible: true, scaleMax: coverageMax, showYAxis: true, className: "vertical-chart--coverage", formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0) })}
-      </div>
-    </section>
-    <section class="dashboard-section" id="batch-acos">
-      ${sectionHead("批量 ACoS vs 品类平均", "所选月份合并花费与销售额后重算 ACoS；无批量销售额时，右侧批量 ACoS 数值显示横杠。", `${acosRows.length} 个品类`)}
-      <div class="chart-panel chart-panel--full">
-        <div class="chart-title-row">
-          ${segmentControl("batch-acos-sort", [["desc", "差值从高到低"], ["asc", "差值从低到高"]], state.ui.batchAcosSort)}
-          ${legendMarkup("批量 ACoS", "品类平均 ACoS")}
-        </div>
-        ${dumbbellChart(acosRows.map((row) => ({ label: row.维度, previous: row.批量ACOS, current: row.品类平均ACOS, difference: row.ACoS差值 })), { min: 0, max: acosMax, showAxis: true, hideNonPositive: true, formatter: (v) => formatPercent(v, true), axisFormatter: (v) => formatPercent(v, true, 0), differenceFormatter: formatSignedFractionPercent })}
       </div>
     </section>
     <section class="dashboard-section" id="batch-low-efficiency">
@@ -2712,12 +2692,13 @@ function renderSubnav() {
       "report-required": "required",
     };
     if (report) sections = sections.filter(([id]) => !groupBySection[id] || reportFilteredCategories(report, groupBySection[id]).length > 0);
+    if (report) sections = sections.filter(([id]) => id !== "report-batch-monitor" || Boolean(report.batch_monitor?.tables?.some((table) => table?.rows?.length)));
   }
   const sectionLinks = sections.map(([id, label], index) => {
     const lingxingRuleRequestLink = state.page === "lingxing_rules" && id === "rule-query"
       ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW79wl46vhZMAP7aaJzlwrZgb?utm_scene=person_space&amp;iframeQuery=viewId%3D1qX0QQ0%26sheetId%3Ddv19yqvsgs3oebp3pcjys" target="_blank" rel="noopener noreferrer">新增/修改规则需求收集表</a>`
       : "";
-    const sbsdRequestLink = state.page === "monthly_review" && id === "monthly-sd-spend"
+    const sbsdRequestLink = state.page === "monthly_review" && id === "monthly-sbsd-share"
       ? `<a class="subnav-action" href="https://alidocs.dingtalk.com/notable/share/form/v01AJdl659bwZ8Q7Oke_GNZbE2w_i7B4JaT?source=link" target="_blank" rel="noopener noreferrer">SBSD投放需求</a>`
       : "";
     return `<a class="subnav-link ${index === 0 ? "is-active" : ""}" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>
@@ -2773,7 +2754,6 @@ function renderCurrentPageAtSection(sectionId) {
 
 function pageFilterConfigs(pageId) {
   if (pageId === "monthly_review") return monthlyFilterConfig(state.data.monthly_review);
-  if (pageId === "sd_spend") return sdSpendFilterConfig(state.data.monthly_review);
   if (pageId === "invalid_low_efficiency") return invalidFilterConfig(state.data.invalid_low_efficiency);
   if (pageId === "lingxing_rules") return lingxingFilterConfig(state.data.lingxing_rules);
   if (pageId === "lingxing_special") return specialRuleFilterConfig(state.data.lingxing_rules);
@@ -3119,7 +3099,6 @@ function handleRootClick(event) {
     if (segment === "report-self-invest") state.ui.weeklySelfTab = value;
     if (segment === "invalid-detail") state.ui.invalidDetailTab = value;
     if (segment === "batch-summary") state.ui.batchSummaryTab = value;
-    if (segment === "batch-acos-sort") state.ui.batchAcosSort = value;
     renderCurrentPage();
     document.getElementById(segment)?.scrollIntoView({ block: "start" });
     return;
